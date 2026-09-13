@@ -1,17 +1,50 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: xui-restore
-# Version: v2.4; compatible with xui-backup v2.1-v2.10 archives
-# Description: Restores a verified 3x-ui backup archive, validates manifest
-# metadata and schema before confirmation, and preserves a rollback copy of
-# the current database.
-# Context / Constraints: Must be run as root; requires secure permissions on
-#                        the environment file and backup directory.
-# Inputs: Optional archive filename; /etc/x-ui/.env; encrypted backup archive.
-# Outputs: Restored x-ui database, service status messages, rollback database.
-# Dependencies: bash, python3, sqlite3, gpg, tar, sha256sum, systemctl.
-# Exit Codes: 0 on success or cancellation; non-zero on validation, verification,
-#             decryption, restore, or service-start failure.
+# Name:        xui-restore
+# Version:     2.5
+# Example:     /usr/local/bin/xui-restore --yes xui-backup-20260101T030000Z-1-1.tar.gz.gpg
+# Supported:   GNU/Linux, Bash >= 4.4, GNU coreutils, Systemd >= 245
+# Description: Restores a verified 3x-ui backup archive: decrypts via the
+#              local GPG secret keyring, validates manifest/schema/SQLite
+#              integrity, requires explicit confirmation, and preserves a
+#              rollback copy of the current database with automatic recovery
+#              on failure.
+# Author:      cr3ma1or
+# Last Change: 2026-09-xx
+# License:     MIT License
+#
+# Compatibility: xui-backup v2.11+ archives (GPG dual-recipient asymmetric
+#                encryption; manifest format xui-backup-manifest-v2).
+#
+# CLI Flags:
+#   -y, --yes   Skip interactive confirmations (non-interactive / DR use)
+#   -h, --help  Show usage message and exit
+#
+# Environment Variables:
+#   None. This script does not read /etc/x-ui/.env; GPG recipient key
+#   selection is automatic via the local secret keyring in $GNUPGHOME.
+#
+# Requirements:
+#   - bash (>= 4.4), python3 (>= 3.6)
+#   - coreutils (basename, cat, chmod, date, install, mkdir, mktemp, mv,
+#     rm, sha256sum, sleep, sort, stat, timeout)
+#   - sqlite3, gpg, gpgconf, tar, findutils (find), util-linux (flock), systemctl
+#
+# Infrastructure Paths:
+#   - Database:        /etc/x-ui/x-ui.db             (root:root 0600)
+#   - Backup Store:     /backup/x-ui                  (root:root 0700)
+#   - GNUPGHOME:        /etc/x-ui/standby/primary-local-gnupg (root:root 0700)
+#   - Lock File:        /run/xui-backup/lock          (shared with xui-backup)
+#   - Log File:         /var/log/xui-restore.log      (root:root 0600)
+#
+# Exit Codes:
+#   0   - Successful restore
+#   1   - Validation, verification, decryption, restore, or service-start failure
+#   2   - CLI usage error
+#   3   - User cancellation (YES/RESTORE not confirmed)
+#   127 - Required executable was not found
+#   130 - Interrupted by SIGINT
+#   143 - Terminated by SIGTERM
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -20,7 +53,11 @@ umask 077
 # ------------------------------------------------------------------------------
 # 1. Configuration & Constants
 # ------------------------------------------------------------------------------
-
+readonly SCRIPT_NAME=${0##*/}
+readonly SCRIPT_VERSION="2.5"
+readonly LOG_FILE=/var/log/xui-restore.log
+readonly COMMAND_TIMEOUT_SECONDS=300
+readonly SERVICE_ACTIVE_RETRIES=15
 readonly ENV_FILE=/etc/x-ui/.env
 readonly BACKUP_DIR=/backup/x-ui
 readonly DB_PATH=/etc/x-ui/x-ui.db
@@ -28,64 +65,176 @@ readonly DB_DIR=${DB_PATH%/*}
 readonly XUI_SERVICE=x-ui
 readonly LOCK_DIR=/run/xui-backup
 readonly LOCK_FILE="${LOCK_DIR}/lock"
+readonly GNUPG_DIR=/etc/x-ui/standby/primary-local-gnupg
+export GNUPGHOME="$GNUPG_DIR"
+export SCRIPT_VERSION
+
+readonly REQUIRED_COMMANDS=(
+  basename cat chmod date find flock gpg gpgconf install mkdir mktemp mv
+  python3 rm sha256sum sleep sort sqlite3 stat systemctl tar timeout
+)
 
 TEMP_DIR=""
-ROLLBACK_DB=""
+LOCK_FD=-1
+LOCK_ACQUIRED=0
 SERVICE_STOPPED=0
 REPLACED_DB=0
+ASSUME_YES=0
+ROLLBACK_DB=""
 ARCHIVE=""
 HASH_FILE=""
-LOCK_FD=-1
+SELECT_ARG=""
 
-# ------------------------------------------------------------------------------
-# 2. Helper Functions & Error Handling
-# ------------------------------------------------------------------------------
-
-# Loads approved environment variables from the protected .env file.
-load_env() {
-  local item key value env_dump
-
-  env_dump="$(mktemp "${BACKUP_DIR}/.restore_env.XXXXXX")"
-  chmod 600 "$env_dump"
-
-  if ! python3 - "$ENV_FILE" >"$env_dump" <<'PY'
-import ast, re, sys
-allowed = {"BACKUP_PASSPHRASE"}
-line_re = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
-with open(sys.argv[1], encoding="utf-8") as f:
-    for n, raw in enumerate(f, 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = line_re.fullmatch(line)
-        if not m or m.group(1) not in allowed:
-            raise SystemExit(f"Invalid or forbidden .env entry at line {n}")
-        key, val = m.groups()
-        if val[:1] in ("'", '"'):
-            try:
-                val = ast.literal_eval(val)
-            except (SyntaxError, ValueError) as e:
-                raise SystemExit(f"Invalid quoted value at line {n}: {e}")
-            if not isinstance(val, str):
-                raise SystemExit(f"Value at line {n} must be a string")
-        elif val != val.strip() or any(c in val for c in "`$\\"):
-            raise SystemExit(f"Unsafe unquoted value at line {n}; quote it")
-        if "\x00" in val or "\n" in val or "\r" in val:
-            raise SystemExit(f"Invalid control character at line {n}")
-        print(key + "=" + val)
-PY
-  then
-    rm -f -- "$env_dump"
-    return 1
+prepare_log_file() {
+  if [[ -L "$LOG_FILE" ]]; then
+    printf 'Refusing symlink log file: %s\n' "$LOG_FILE" >&2
+    exit 1
   fi
 
-  while IFS= read -r item || [[ -n "$item" ]]; do
-    key=${item%%=*}
-    value=${item#*=}
-    printf -v "$key" '%s' "$value"
-  done <"$env_dump"
+  if [[ -e "$LOG_FILE" && ! -f "$LOG_FILE" ]]; then
+    printf 'Refusing non-regular log file: %s\n' "$LOG_FILE" >&2
+    exit 1
+  fi
 
-  rm -f -- "$env_dump"
+  if [[ ! -e "$LOG_FILE" ]]; then
+    install -m 0600 -o root -g root /dev/null "$LOG_FILE"
+  else
+    chown -h root:root "$LOG_FILE"
+    chmod 0600 "$LOG_FILE"
+  fi
+
+  [[ "$(stat -c '%U:%G:%a' "$LOG_FILE")" == 'root:root:600' ]] || {
+    printf 'Unsafe log file owner/mode: %s\n' "$LOG_FILE" >&2
+    exit 1
+  }
+}
+
+log() {
+  local level=$1
+  shift
+  local line
+
+  line="$(printf '%s [%s] [%s] [pid=%s] %s' \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    "$level" \
+    "$SCRIPT_NAME" \
+    "$$" \
+    "$*")"
+  printf '%s\n' "$line" >&2
+  [[ -n "${LOG_FILE:-}" ]] && printf '%s\n' "$line" >>"$LOG_FILE" 2>/dev/null
+
+}
+
+log_info() {
+  log INFO "$@"
+}
+
+log_warn() {
+  log WARN "$@"
+}
+
+log_error() {
+  log ERROR "$@"
+}
+
+# shellcheck disable=SC2317,SC2329,SC2339 # Invoked indirectly via cleanup() in EXIT trap
+wipe_file() {
+  local target_file="$1"
+  [[ -f "$target_file" ]] || return 0
+
+  if command -v shred >/dev/null 2>&1; then
+    shred -u -z -n 1 -- "$target_file" 2>/dev/null || rm -f -- "$target_file"
+  else
+    rm -f -- "$target_file"
+  fi
+}
+
+# Verifies that a directory and all of its parent components up to "/" are
+# owned by root and not group/world-writable — protects against symlink-swap
+# or directory-replacement attacks via an insecure ancestor directory.
+require_safe_parent_chain() {
+  local dir="$1" parent
+  parent="$(dirname -- "$dir")"
+  while [[ "$parent" != "/" && "$parent" != "." ]]; do
+    local mode
+    mode="$(stat -c '%U:%a' -- "$parent" 2>/dev/null)" || return 1
+    [[ "$mode" == root:* ]] || { log_error "Unsafe ancestor owner: $parent"; return 1; }
+    [[ "${mode#*:}" =~ ^[0-7]00$|^[0-7]?[0-5]?[0-5]$ ]] || {
+      log_error "Unsafe ancestor permissions: $parent ($mode)"; return 1; }
+    parent="$(dirname -- "$parent")"
+  done
+}
+
+usage() {
+  cat <<EOF
+Использование: $SCRIPT_NAME [ОПЦИИ] [АРХИВ]
+
+Опции:
+  -y, --yes     Не запрашивать подтверждения (автоматический режим)
+  -h, --help    Показать справку и выйти
+
+Аргументы:
+  АРХИВ         Имя файла в $BACKUP_DIR (по умолчанию: последний валидный)
+EOF
+}
+
+require_cmd() {
+  local cmd
+  for cmd in "$@"; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+      echo "Не найдена обязательная команда: $cmd" >&2
+      exit 127
+    }
+  done
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      -y|--yes)
+        ASSUME_YES=1
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "Неизвестный параметр: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+      *)
+        if [[ -n "$SELECT_ARG" ]]; then
+          echo 'Можно указать не более одного архива.' >&2
+          usage >&2
+          exit 2
+        fi
+        SELECT_ARG="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if (($# == 1)) && [[ -n "$SELECT_ARG" ]]; then
+    echo 'Можно указать не более одного архива.' >&2
+    usage >&2
+    exit 2
+  fi
+
+  if (($# > 1)); then
+    echo 'Можно указать не более одного архива.' >&2
+    usage >&2
+    exit 2
+  fi
+
+  if (($# == 1)); then
+    SELECT_ARG="$1"
+  fi
 }
 
 # Acquires an exclusive, non-blocking lock to prevent concurrent restores.
@@ -94,73 +243,93 @@ acquire_lock() {
 
   exec {LOCK_FD}>"$LOCK_FILE"
   flock -n "$LOCK_FD" || {
-    echo 'Backup или восстановление x-ui уже выполняется; операция отменена.' >&2
+    log_error 'Backup или восстановление x-ui уже выполняется; операция отменена.'
     exit 1
   }
+  LOCK_ACQUIRED=1
 }
 
 # Restores the previous database and restarts the service after abnormal exit.
+# shellcheck disable=SC2317,SC2329,SC2339 # Invoked indirectly via EXIT trap
 cleanup() {
   local rc=$?
   trap - EXIT ERR INT TERM
 
-  if [[ "$SERVICE_STOPPED" == 1 ]]; then
-    if [[ "$REPLACED_DB" == 1 && -n "$ROLLBACK_DB" && -f "$ROLLBACK_DB" ]]; then
+  if [[ "${SERVICE_STOPPED:-0}" == 1 ]]; then
+    if [[ "${REPLACED_DB:-0}" == 1 && -n "${ROLLBACK_DB:-}" && -f "$ROLLBACK_DB" ]]; then
       if [[ "$(sqlite3 -readonly "$ROLLBACK_DB" 'PRAGMA integrity_check;' 2>/dev/null)" == ok ]]; then
-        echo 'Аварийный rollback исходной DB...'
+        log_warn 'Аварийный rollback исходной DB.'
 
         if mv -f -- "$ROLLBACK_DB" "$DB_PATH"; then
           rm -f -- "${DB_PATH}-wal" "${DB_PATH}-shm" || true
         else
-          echo 'Не удалось атомарно опубликовать rollback DB; требуется ручное вмешательство.' >&2
+          local emg_bak
+          emg_bak="${BACKUP_DIR}/failed-rollback-$(date +%s).db"
+          mv -f -- "$ROLLBACK_DB" "$emg_bak" || true
+          log_error "Не удалось опубликовать rollback DB; файл сохранён: $emg_bak"
         fi
       else
-        echo 'Rollback DB повреждена; автоматический откат пропущен. Требуется ручное вмешательство.' >&2
+        local corrupt_bak
+        corrupt_bak="${BACKUP_DIR}/corrupted-rollback-$(date +%s).db"
+        mv -f -- "$ROLLBACK_DB" "$corrupt_bak" || true
+        log_error "Rollback DB повреждена; копия для анализа сохранена: $corrupt_bak"
       fi
     fi
 
-    echo "Запуск $XUI_SERVICE после аварийного завершения..."
+    log_warn "Запуск $XUI_SERVICE после аварийного завершения."
     systemctl start "$XUI_SERVICE" || true
   fi
 
   if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]]; then
-    rm -f -- "$TEMP_DIR/passphrase" || true
-    rm -rf -- "$TEMP_DIR" || true
+    case "$TEMP_DIR" in
+      "$BACKUP_DIR"/.restore_work.*)
+        [[ -f "$TEMP_DIR/payload.tar.gz" ]] && wipe_file "$TEMP_DIR/payload.tar.gz"
+        [[ -f "$TEMP_DIR/payload/x-ui.db" ]] && wipe_file "$TEMP_DIR/payload/x-ui.db"
+        [[ -f "$TEMP_DIR/payload/3xui_export.json" ]] && wipe_file "$TEMP_DIR/payload/3xui_export.json"
+        rm -rf -- "$TEMP_DIR" || true
+        ;;
+      *)
+        log_error "Cleanup отказался удалять неожиданный TEMP_DIR: $TEMP_DIR"
+        ;;
+    esac
   fi
 
-  if ((LOCK_FD >= 0)); then
+  [[ -n "${ROLLBACK_DB:-}" && -f "$ROLLBACK_DB" && "${SERVICE_STOPPED:-0}" -eq 0 ]] && rm -f -- "$ROLLBACK_DB" || true
+  [[ -f "${DB_DIR}/.x-ui.db.restore.new" ]] && rm -f -- "${DB_DIR}/.x-ui.db.restore.new" || true
+
+  if (( LOCK_ACQUIRED == 1 )) && [[ -n "${GNUPGHOME:-}" && -d "$GNUPGHOME" ]]; then
+    gpgconf --homedir "$GNUPGHOME" --kill gpg-agent 2>/dev/null || true
+  fi
+
+
+  if (( ${LOCK_FD:--1} >= 0 )); then
     flock -u "$LOCK_FD" || true
     exec {LOCK_FD}>&- || true
     LOCK_FD=-1
   fi
 
-  unset BACKUP_PASSPHRASE
   exit "$rc"
-}
-
-# Removes leftover .restore_env.* dumps orphaned by an unclean prior exit.
-reap_stale_env_dumps() {
-  find "$BACKUP_DIR" -maxdepth 1 -type f -name '.restore_env.*' -mmin +60 -print0 2>/dev/null |
-    while IFS= read -r -d '' f; do
-      [[ "$(stat -c '%U:%G' -- "$f")" == root:root ]] && {
-        shred -u -- "$f" 2>/dev/null || rm -f -- "$f"
-        echo "Reaped orphaned env dump: $(basename -- "$f")" >&2
-      }
-    done
 }
 
 # Logs the failing command/line for post-mortem, then exits with its status
 # explicitly rather than relying on implicit set -e behavior after ERR fires.
+# shellcheck disable=SC2317,SC2329,SC2339 # Invoked indirectly via ERR trap
 on_error() {
   local rc=$?
-  echo "Ошибка на строке ${BASH_LINENO[0]}: команда \`${BASH_COMMAND}\`" >&2
-  exit "$rc"
+  trap - ERR
+  log_error "Ошибка на строке ${BASH_LINENO[0]}: команда \`${BASH_COMMAND}\`, exit_code=$rc"
+  # Normalize to a stable contract (see header "Exit Codes"): unexpected
+  # runtime failures caught via ERR always surface as exit code 1,
+  # regardless of the raw exit status of the failing command.
+  exit 1
 }
 
 # Marks interruption by signal so it can be distinguished from a normal error.
+# shellcheck disable=SC2317,SC2329,SC2339 # Invoked indirectly via INT trap
 on_interrupt() {
+  trap - INT TERM ERR
   local sig="$1"
-  echo 'Получен сигнал прерывания; выполняется корректное завершение...' >&2
+  log_warn "Получен сигнал $sig; выполняется корректное завершение."
   case "$sig" in
     INT) exit 130 ;;
     TERM) exit 143 ;;
@@ -169,93 +338,169 @@ on_interrupt() {
 }
 
 # Checks privileges, required files, permissions, tools, and environment values.
-validate() {
+validate_runtime() {
   [[ $EUID -eq 0 ]] || {
-    echo 'Запустите через sudo.'
+    log_error 'Запустите скрипт с правами root (sudo).'
+    exit 1
+  }
+  require_cmd "${REQUIRED_COMMANDS[@]}"
+}
+
+validate() {
+  if [[ -e "$ENV_FILE" ]]; then
+    [[ ! -L "$ENV_FILE" && -f "$ENV_FILE" ]] || {
+      log_error '.env не является обычным файлом или является symlink.'
+      exit 1
+    }
+    [[ "$(stat -c '%U:%G:%a' "$ENV_FILE")" == root:root:600 ]] || {
+      log_error 'Небезопасные права .env: ожидается root:root:600.'
+      exit 1
+    }
+  fi
+
+  [[ ! -L "$BACKUP_DIR" && -d "$BACKUP_DIR" ]] || {
+    echo 'Backup-каталог отсутствует, не является каталогом или является symlink.' >&2
     exit 1
   }
 
-  [[ -f "$ENV_FILE" ]] || {
-    echo 'Не найден файл .env.' >&2
+  [[ ! -L "$GNUPGHOME" && -d "$GNUPGHOME" ]] || {
+    echo 'GNUPGHOME отсутствует, не является каталогом или является symlink.' >&2
     exit 1
   }
 
-  [[ -f "$DB_PATH" ]] || {
-    echo 'Не найдена текущая DB x-ui.' >&2
+  require_safe_parent_chain "$GNUPGHOME" || exit 1
+
+  [[ -d "$DB_DIR" && ! -L "$DB_DIR" ]] || {
+    echo 'Каталог DB отсутствует, не является каталогом или является symlink.' >&2
     exit 1
   }
 
-  [[ "$(stat -c '%U:%G:%a' "$DB_PATH")" == root:root:600 ]] || {
-    echo 'Небезопасные права текущей DB.' >&2
+  if [[ -L "$DB_PATH" ]]; then
+    echo 'DB_PATH не должен быть symlink.' >&2
     exit 1
-  }
+  fi
 
-  [[ "$(stat -c '%U:%G:%a' "$ENV_FILE")" == root:root:600 ]] || {
-    echo 'Небезопасные права .env.' >&2
-    exit 1
-  }
+
+  if [[ -e "$DB_PATH" ]]; then
+    [[ -f "$DB_PATH" ]] || { echo 'DB_PATH не является обычным файлом.' >&2; exit 1; }
+    [[ "$(stat -c '%U:%G:%a' "$DB_PATH")" == root:root:600 ]] || { echo 'Небезопасные права текущей DB.' >&2; exit 1; }
+  fi
 
   [[ "$(stat -c '%U:%G:%a' "$BACKUP_DIR")" == root:root:700 ]] || {
-    echo 'Небезопасные права backup-каталога.' >&2
+    echo 'Небезопасные права backup-каталога: ожидается root:root:700.' >&2
     exit 1
   }
 
-  [[ "$(stat -c '%d' "$BACKUP_DIR")" == "$(stat -c '%d' "$DB_DIR")" ]] || {
-    echo 'Каталог backup и каталог DB находятся на разных файловых системах; атомарный restore невозможен.' >&2
+  [[ -d "$DB_DIR" && -w "$DB_DIR" ]] || {
+    echo "Каталог DB ($DB_DIR) отсутствует или недоступен для записи." >&2
     exit 1
   }
 
-  command -v sqlite3 >/dev/null
-  command -v gpg >/dev/null
-  command -v python3 >/dev/null
-  command -v tar >/dev/null
-  command -v sha256sum >/dev/null
-  command -v flock >/dev/null
-  command -v install >/dev/null
-  command -v stat >/dev/null
-  command -v systemctl >/dev/null
+  [[ "$(stat -c '%U:%G:%a' "$GNUPGHOME")" == "root:root:700" ]] || {
+    echo 'Небезопасные права GNUPGHOME: ожидается root:root:700.' >&2
+    exit 1
+  }
 
-  load_env
-  : "${BACKUP_PASSPHRASE:?BACKUP_PASSPHRASE is required}"
+  if ! gpg --batch --list-secret-keys >/dev/null 2>&1; then
+    echo 'В GNUPGHOME не обнаружен закрытый ключ для дешифрации архива.' >&2
+    exit 1
+  fi
 }
 
 # Selects the requested archive or the latest matching backup archive.
 select_archive() {
   local arg=${1:-}
   local archive hash_file
+  local archive_list
 
   if [[ -n "$arg" ]]; then
-    arg=$(basename -- "$arg")
+    arg="${arg##*/}"
     archive="$BACKUP_DIR/$arg"
 
     [[ "$archive" == "$BACKUP_DIR/"*.tar.gz.gpg && -f "$archive" ]] || {
-      echo "Недопустимый архив: $arg"
+      echo "Недопустимый архив: $arg" >&2
       exit 1
     }
   else
     local -a restore_archives=()
+    archive_list="$TEMP_DIR/restore_archives.list"
 
-    mapfile -d '' -t restore_archives < <(
-      find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' -print0 | sort -z
-    )
+    if ! find "$BACKUP_DIR" -maxdepth 1 -type f -name 'xui-backup-*.tar.gz.gpg' \
+        -print0 | LC_ALL=C sort -z >"$archive_list"; then
+      echo 'Не удалось получить список backup-архивов.' >&2
+      exit 1
+    fi
 
-    ((${#restore_archives[@]} > 0)) || {
-      echo 'Бэкапы не найдены.'
+    if ! mapfile -d '' -t restore_archives <"$archive_list"; then
+      rm -f -- "$archive_list"
+      echo 'Не удалось прочитать список backup-архивов.' >&2
+      exit 1
+    fi
+
+    rm -f -- "$archive_list" || {
+      echo 'Не удалось удалить временный список backup-архивов.' >&2
       exit 1
     }
 
-    archive="${restore_archives[${#restore_archives[@]} - 1]}"
+
+    ((${#restore_archives[@]} > 0)) || {
+      echo 'Бэкапы не найдены.' >&2
+      exit 1
+    }
+
+    local idx found_valid=0
+    for ((idx = ${#restore_archives[@]} - 1; idx >= 0; idx--)); do
+      local cand="${restore_archives[idx]}"
+      if [[ -f "${cand}.sha256" ]]; then
+        archive="$cand"
+        found_valid=1
+        break
+      fi
+    done
+
+    ((found_valid == 1)) || {
+      echo 'Не найдено ни одного бэкапа с валидным SHA-256 sidecar.' >&2
+      exit 1
+    }
   fi
-
-  hash_file="${archive}.sha256"
-
-  [[ -f "$hash_file" ]] || {
-    echo 'Не найден SHA-256 sidecar.'
-    exit 1
-  }
+    hash_file="${archive}.sha256"
+    [[ -f "$hash_file" ]] || {
+      echo "Не найден SHA-256 sidecar: $hash_file" >&2
+      exit 1
+    }
 
   ARCHIVE="$archive"
   HASH_FILE="$hash_file"
+}
+
+verify_archive_checksum() {
+  local -a checksum_lines=()
+  local checksum_line
+  local expected_hash
+  local actual_hash
+
+  if ! mapfile -t checksum_lines <"$HASH_FILE"; then
+    echo 'SHA-256 sidecar пуст или недоступен для чтения.' >&2
+    return 1
+  fi
+
+  if ((${#checksum_lines[@]} != 1)); then
+    echo 'SHA-256 sidecar должен содержать ровно одну checksum-запись.' >&2
+    return 1
+  fi
+
+  checksum_line="${checksum_lines[0]}"
+  expected_hash="${checksum_line%%[[:space:]]*}"
+
+  if [[ ! "$expected_hash" =~ ^[[:xdigit:]]{64}$ ]]; then
+    echo 'SHA-256 sidecar имеет некорректный формат.' >&2
+    return 1
+  fi
+
+  actual_hash="$(sha256sum -- "$ARCHIVE")"
+  actual_hash="${actual_hash%%[[:space:]]*}"
+
+  [[ "$actual_hash" == "$expected_hash" ]]
 }
 
 # Validates archive contents, manifest hashes, SQLite integrity, and table list.
@@ -554,41 +799,40 @@ PY
 
 # Performs archive verification, database replacement, and rollback-protected restart.
 main() {
+  parse_args "$@"
+  [[ $EUID -eq 0 ]] || {
+    echo "Must run as root" >&2
+    exit 1
+  }
+  prepare_log_file
+  require_cmd "${REQUIRED_COMMANDS[@]}"
+
   trap cleanup EXIT
   trap on_error ERR
   trap 'on_interrupt INT' INT
   trap 'on_interrupt TERM' TERM
-
-  reap_stale_env_dumps
-
+  validate_runtime
   acquire_lock
-
   validate
-
-  select_archive "${1:-}"
-
-  echo "Выбран архив: $ARCHIVE"
-  echo 'Будут выполнены SHA-256, GPG, manifest, JSON, SQLite integrity и rollback-защита.'
-
-  (
-    cd "$BACKUP_DIR" &&
-      sha256sum -c --status "$(basename "$HASH_FILE")"
-  ) || {
-    echo 'SHA-256 не совпадает.'
-    exit 1
-  }
-
-  echo 'SHA-256: OK'
 
   TEMP_DIR="$(mktemp -d "${BACKUP_DIR}/.restore_work.XXXXXX")"
   chmod 700 "$TEMP_DIR"
-  printf %s "$BACKUP_PASSPHRASE" >"$TEMP_DIR/passphrase"
-  chmod 600 "$TEMP_DIR/passphrase"
-  unset BACKUP_PASSPHRASE
 
+  select_archive "$SELECT_ARG"
+
+  log_info "Выбран архив: $ARCHIVE"
+  log_info 'Будут выполнены SHA-256, GPG, manifest, JSON, SQLite integrity и rollback-защита.'
+
+  if ! verify_archive_checksum; then
+    log_error 'Проверка SHA-256 выбранного архива не пройдена.'
+    exit 1
+  fi
+
+  log_info 'SHA-256: OK'
+  
   local payload="$TEMP_DIR/payload.tar.gz"
   local out="$TEMP_DIR/payload"
-  local restore_new="$TEMP_DIR/x-ui.db.restore.new"
+  local restore_new="$DB_DIR/.x-ui.db.restore.new"
   local owner
   local group
   local mode
@@ -598,48 +842,64 @@ main() {
 
   mkdir -m 700 "$out"
 
-  gpg --batch --yes --pinentry-mode loopback --no-symkey-cache \
-    --passphrase-file "$TEMP_DIR/passphrase" \
-    --output "$payload" \
-    --decrypt "$ARCHIVE"
-
-  rm -f -- "$TEMP_DIR/passphrase"
-
-  verify_payload "$payload" "$out" || {
-    echo 'Проверка расшифрованного backup не пройдена.'
-    exit 1
-  }
-
-  if [[ "$(sqlite3 -readonly "$DB_PATH" 'PRAGMA integrity_check;')" != ok ]]; then
-    echo 'Текущая DB не проходит SQLite integrity_check; восстановление отменено.' >&2
+  if ! timeout --foreground "${COMMAND_TIMEOUT_SECONDS}s" \
+      gpg --batch --yes --decrypt --output "$payload" "$ARCHIVE"; then
+    log_error "GPG-дешифрование не выполнено за ${COMMAND_TIMEOUT_SECONDS} секунд или завершилось ошибкой."
     exit 1
   fi
 
+  verify_payload "$payload" "$out" || {
+    echo 'Проверка расшифрованного backup не пройдена.' >&2
+    exit 1
+  }
+
   print_restore_preflight "$out/manifest.json" "$ARCHIVE" || {
-    echo 'Не удалось вывести проверенные metadata backup.' >&2
+    log_error 'Не удалось вывести проверенные metadata backup.'
     exit 1
   }
 
   schema_rc=0
-  compare_schema "$DB_PATH" "$out/x-ui.db" || schema_rc=$?
+  if [[ -f "$DB_PATH" && "$(sqlite3 -readonly "$DB_PATH" 'PRAGMA integrity_check;' 2>/dev/null)" == ok ]]; then
+    compare_schema "$DB_PATH" "$out/x-ui.db" || schema_rc=$?
+  else
+    echo
+    echo 'ВНИМАНИЕ: Текущая рабочая DB отсутствует или повреждена! Сравнение схем пропущено.' >&2
+    schema_rc=20
+  fi
 
   if ((schema_rc == 10)); then
     echo
     echo 'ВНИМАНИЕ: схема backup отличается от текущей рабочей DB.'
     echo 'Продолжение может потребовать миграции 3x-ui после запуска сервиса.'
 
-    if ! read -r -p 'Для подтверждения восстановления при различии схемы введите строго YES: ' schema_answer; then
-      echo
-      echo 'Отменено: не получено подтверждение YES.'
-      exit 0
-    fi
+    if (( ASSUME_YES == 0 )); then
+      if ! read -r -p 'Для подтверждения восстановления при различии схемы введите строго YES: ' schema_answer; then
+        echo >&2
+        echo 'Отменено: не получено подтверждение YES.' >&2
+        exit 3
+      fi
 
-    if [[ "$schema_answer" != YES ]]; then
-      echo 'Отменено: подтверждение YES не получено.'
-      exit 0
+      if [[ "$schema_answer" != YES ]]; then
+        echo 'Отменено: подтверждение YES не получено.' >&2
+        exit 3
+      fi
+    fi
+  elif ((schema_rc == 20)); then
+    echo
+    echo 'ВНИМАНИЕ: Восстановление выполняется на повреждённую или отсутствующую БД.'
+    if (( ASSUME_YES == 0 )); then
+      if ! read -r -p 'Для подтверждения восстановления аварийного узла введите строго YES: ' schema_answer; then
+        echo >&2
+        echo 'Отменено: не получено подтверждение YES.' >&2
+        exit 3
+      fi
+      if [[ "$schema_answer" != YES ]]; then
+        echo 'Отменено: подтверждение YES не получено.' >&2
+        exit 3
+      fi
     fi
   elif ((schema_rc != 0)); then
-    echo 'Не удалось сравнить schema текущей и backup DB.' >&2
+    echo "Не удалось сравнить schema текущей и backup DB, exit_code=$schema_rc." >&2
     exit "$schema_rc"
   fi
 
@@ -647,37 +907,56 @@ main() {
   echo 'Все проверки backup успешно пройдены.'
   echo "Будет остановлен $XUI_SERVICE, создан rollback текущей DB и выполнена атомарная замена."
 
-  if ! read -r -p 'Для продолжения введите строго RESTORE: ' answer; then
-    echo
-    echo 'Отменено: не получено подтверждение RESTORE.'
-    exit 0
+  if (( ASSUME_YES == 0 )); then
+    if ! read -r -p 'Для продолжения введите строго RESTORE: ' answer; then
+      echo >&2
+      echo 'Отменено: не получено подтверждение RESTORE.' >&2
+      exit 3
+    fi
+
+    if [[ "$answer" != RESTORE ]]; then
+      echo 'Отменено.' >&2
+      exit 3
+    fi
   fi
 
-  if [[ "$answer" != RESTORE ]]; then
-    echo 'Отменено.'
-    exit 0
+  if [[ -f "$DB_PATH" ]]; then
+    owner=$(stat -c %u "$DB_PATH")
+    group=$(stat -c %g "$DB_PATH")
+    mode=$(stat -c %a "$DB_PATH")
+  else
+    owner=0
+    group=0
+    mode=600
   fi
 
-  owner=$(stat -c %u "$DB_PATH")
-  group=$(stat -c %g "$DB_PATH")
-  mode=$(stat -c %a "$DB_PATH")
-
-  echo "Остановка $XUI_SERVICE..."
+  log_info "Остановка $XUI_SERVICE."
   systemctl stop "$XUI_SERVICE"
+
   SERVICE_STOPPED=1
 
-  ROLLBACK_DB="$TEMP_DIR/before-restore.db"
-
-  local rollback_escaped="${ROLLBACK_DB//\'/\'\'}"
-  sqlite3 "$DB_PATH" <<SQL
+  if [[ -f "$DB_PATH" ]]; then
+    if [[ "$(sqlite3 -readonly "$DB_PATH" 'PRAGMA integrity_check;' 2>/dev/null)" == ok ]]; then
+      ROLLBACK_DB="$DB_DIR/.before-restore.db"
+      local rollback_escaped="${ROLLBACK_DB//\'/\'\'}"
+      sqlite3 "$DB_PATH" <<SQL
 .timeout 8000
 .backup '${rollback_escaped}'
 SQL
-
-  [[ "$(sqlite3 -readonly "$ROLLBACK_DB" 'PRAGMA integrity_check;')" == ok ]] || {
-    echo 'Rollback DB повреждена.'
-    exit 1
-  }
+      [[ "$(sqlite3 -readonly "$ROLLBACK_DB" 'PRAGMA integrity_check;')" == ok ]] || {
+        echo 'Не удалось создать валидную rollback-копию исходной DB.' >&2
+        exit 1
+      }
+    else
+      local corrupt_save
+      corrupt_save="${BACKUP_DIR}/corrupted-pre-restore-$(date +%s).db"
+      log_warn "Текущая DB повреждена; создаётся защитная копия перед заменой: $corrupt_save"
+      cp -f -- "$DB_PATH" "$corrupt_save" || true
+      [[ -f "${DB_PATH}-wal" ]] && cp -f -- "${DB_PATH}-wal" "${corrupt_save}-wal" || true
+      [[ -f "${DB_PATH}-shm" ]] && cp -f -- "${DB_PATH}-shm" "${corrupt_save}-shm" || true
+      ROLLBACK_DB=""
+    fi
+  fi
 
   install -o "$owner" -g "$group" -m "$mode" "$out/x-ui.db" "$restore_new"
 
@@ -695,19 +974,27 @@ SQL
 
   local -i attempt=0
   until systemctl is-active --quiet "$XUI_SERVICE"; do
-    ((attempt++))
-    if ((attempt >= 15)); then
+    ((++attempt))
+
+    if ((attempt >= SERVICE_ACTIVE_RETRIES)); then
       echo 'Сервис не запустился за отведённое время; выполнится rollback.' >&2
+      systemctl status --no-pager "$XUI_SERVICE" >&2 || true
+
+      if command -v journalctl >/dev/null 2>&1; then
+        journalctl -u "$XUI_SERVICE" -n 50 --no-pager >&2 || true
+      fi
+
       exit 1
     fi
+
     sleep 1
   done
-
   SERVICE_STOPPED=0
   REPLACED_DB=0
 
-  echo 'Восстановление успешно завершено.'
+  log_info 'Восстановление успешно завершено.'
   echo "Application tables: $(sqlite3 -readonly "$DB_PATH" "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%';")"
+  exit 0
 }
 
 # ------------------------------------------------------------------------------

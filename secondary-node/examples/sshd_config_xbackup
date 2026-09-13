@@ -1,0 +1,10 @@
+# /etc/ssh/sshd_config.d/xui-backup.conf
+# Restrict the xbackup user to forced-command-only SSH for backup delivery.
+# Include this file via: Include /etc/ssh/sshd_config.d/xui-backup.conf
+
+Match User xbackup
+    ForceCommand /opt/xui-backups/bin/xui-backup-receiver.sh
+    AllowAgentForwarding no
+    AllowTcpForwarding no
+    PermitTunnel no
+    X11Forwarding no

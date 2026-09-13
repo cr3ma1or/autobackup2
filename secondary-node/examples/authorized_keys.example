@@ -1,0 +1,11 @@
+# ~/.ssh/authorized_keys for xbackup user (secondary node)
+# The primary node's SSH public key, restricted to the backup receiver forced command.
+# Copy this line to /home/xbackup/.ssh/authorized_keys and ensure 0600 permissions.
+#
+# Generate the key pair on the primary:
+#   ssh-keygen -t ed25519 -f /etc/x-ui/id_ed25519_backup -N ""
+#   cat /etc/x-ui/id_ed25519_backup.pub
+#
+# Then paste the public key line below (replace the example key):
+
+restrict,no-pty,no-port-forwarding,no-X11-forwarding,command="/opt/xui-backups/bin/xui-backup-receiver.sh" ssh-ed25519 AAAA...example...comment@primary

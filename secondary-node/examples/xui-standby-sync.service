@@ -1,0 +1,17 @@
+[Unit]
+Description=3x-ui Standby Sync Engine
+Wants=xui-standby-sync.timer
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/xui-standby sync --json
+TimeoutStartSec=600
+Nice=19
+IOSchedulingClass=idle
+ProtectSystem=strict
+ReadWritePaths=/etc/x-ui /opt/xui-backups /opt/xui-standby /run /var/log
+ProtectHome=true
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=3x-ui Encrypted SQLite Backup + Off-site Delivery
+Wants=xui-backup.timer
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/xui-backup
+Nice=19
+IOSchedulingClass=idle
+RuntimeDirectory=xui-backup
+ProtectSystem=strict
+ReadWritePaths=/backup/x-ui /run/xui-backup /var/log
+ProtectHome=true
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
