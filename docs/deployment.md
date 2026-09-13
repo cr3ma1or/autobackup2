@@ -1,0 +1,132 @@
+# Deployment & Infrastructure Operations Specification
+
+## 1. Сетевая топология и параметры узлов
+
+┌────────────────────────────────────────────────────────────────────────┐
+│ Edge DNS Layer (DNS-Only / Unproxied) │
+│ - sub.example.com ──► <SECONDARY_IP> (Secondary Gateway) │
+│ - direct.example.com ──► <PRIMARY_IP> (Diagnostic Direct) │
+└───────────────────┬────────────────────────────────────────────────────┘
+│ HTTPS: 2096 (Subs), 443 (Reality)
+▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ SECONDARY NODE (Standby Gateway & Storage) │
+│ Public IP: <SECONDARY_IP> | OS: Debian 12 | SSH: <SECONDARY_SSH_PORT> │
+│ Роли: SSH-приемник, хранилище нулевого доверия, Hot-Standby нода │
+│ - Служебный пользователь: xbackup (UID 999, shell: /bin/bash) │
+│ - 3x-ui сервисы: Web 60291, Sub 2096, Reality 443 │
+│ - IPTables DNAT (режим STANDBY): │
+│ :2096 -> <PRIMARY_IP>:39285 │
+│ :443 -> <PRIMARY_IP>:443 │
+│ :53810 -> <PRIMARY_IP>:39284 │
+└───────────────────▲────────────────────────────────────────────────────┘
+│ SSH Stream (Forced Command) | Port: <SECONDARY_SSH_PORT>
+│ Dual-Recipient GPG AES-256 Encrypted Tarball
+┌───────────────────┴────────────────────────────────────────────────────┐
+│ PRIMARY NODE (Active Master) │
+│ Public IP: <PRIMARY_IP> | OS: Ubuntu 24.04 LTS | SSH: <PRIMARY_SSH_PORT>│
+│ Роли: Обработка боевого клиентского трафика, формирование бэкапов │
+│ - Пользователь исполнения: root │
+│ - 3x-ui сервисы: Web 39284, Sub 39285, Reality 443 │
+│ - Исходящий шлюз: wireproxy SOCKS5 (127.0.0.1:40000) │
+│ - Конвейер бэкапа: xui-backup (Systemd Timer: 03:20 UTC +/- 20min) │
+└────────────────────────────────────────────────────────────────────────┘
+
+## 2. Размещение файлов и права доступа
+
+### Primary Node
+
+- `/usr/local/bin/xui-backup` (`0700 root:root`) — скрипт создания бэкапа.
+- `/usr/local/bin/xui-restore` (`0700 root:root`) — скрипт восстановления БД.
+- `/etc/x-ui/.env` (`0600 root:root`) — конфигурация шифрования и уведомлений.
+- `/etc/x-ui/backup-transfer.env` (`0600 root:root`) — параметры SSH-доставки.
+- `/etc/x-ui/id_ed25519_backup` (`0600 root:root`) — приватный SSH-ключ доставки.
+- `/backup/x-ui/` (`0700 root:root`) — локальное хранилище архивов.
+- `/run/xui-backup/lock` (`0600 root:root`) — runtime-блокировка.
+
+### Secondary Node
+
+- `/opt/xui-backups/` (`0750 root:xbackup`) — корневой каталог хранилища.
+- `/opt/xui-backups/bin/xui-backup-receiver.sh` (`0755 root:root`) — точка входа SSH Forced Command.
+- `/opt/xui-backups/bin/xui-backup-retention.sh` (`0700 root:root`) — скрипт очистки.
+- `/opt/xui-backups/bin/xui-backup-health.sh` (`0700 root:root`) — read-only сенсор SLA.
+- `/usr/local/bin/xui-backup-health` (`symlink -> /opt/xui-backups/bin/...`).
+- `/opt/xui-backups/incoming/` (`0700 xbackup:xbackup`) — каталог валидных архивов.
+- `/opt/xui-backups/invalid/` (`0700 xbackup:xbackup`) — карантин поврежденных файлов.
+- `/etc/x-ui/sync.env` (`0400 root:root`) — конфигурация модуля синхронизации.
+- `/etc/x-ui/standby-snapshots/` (`0700 root:root`) — снимки отката (`last-good-pre-sync.db`).
+- `/etc/x-ui/standby-mode` (`0644 root:root`) — маркер состояния (`STANDBY` / `PROMOTED`).
+- `/run/xui-standby.lock` (`0600 root:root`) — блокировка активных процессов репликации.
+
+## 3. Шаблоны конфигурационных файлов (`.env`)
+
+### Primary: `/etc/x-ui/.env`
+
+```bash
+PRIMARY_LOCAL_RECIPIENT="<GPG_HEX_FINGERPRINT_PRIMARY>"
+SECONDARY_SYNC_RECIPIENT="<GPG_HEX_FINGERPRINT_SECONDARY>"
+SEND_TELEGRAM=1
+TG_BOT_TOKEN="<TG_BOT_TOKEN>"
+TG_CHAT_ID="<TG_CHAT_ID>"
+TG_PROXY_URL="socks5h://127.0.0.1:40000"
+MAX_AGE_DAYS=14
+MAX_SIZE_GB=2
+KEEP_MIN_ARCHIVES=3
+EXPORT_JSON=1
+```
+
+### Primary: `/etc/x-ui/backup-transfer.env`
+
+```
+TRANSFER_ENABLED=1
+TRANSFER_HOST="<SECONDARY_IP>"
+TRANSFER_USER="xbackup"
+TRANSFER_PORT="<SECONDARY_SSH_PORT>"
+TRANSFER_KEY="/etc/x-ui/id_ed25519_backup"
+TRANSFER_KNOWN_HOSTS="/etc/x-ui/known_hosts_backup"
+TRANSFER_TIMEOUT_SEC=900
+```
+
+### Secondary: `/etc/x-ui/sync.env`
+
+```
+STANDBY_MODE_FILE="/etc/x-ui/standby-mode"
+LOCK_FILE="/run/xui-standby.lock"
+TARGET_DB_PATH="/etc/x-ui/x-ui.db"
+INCOMING_DIR="/opt/xui-backups/incoming"
+ALLOWLIST_PATH="/etc/x-ui/standby/allowlist.json"
+GNUPGHOME="/etc/x-ui/standby/secondary-sync-gnupg"
+SNAPSHOTS_DIR="/etc/x-ui/standby-snapshots"
+WORK_SYNC_DIR="/opt/xui-backups/.work-sync"
+
+SEND_TELEGRAM=1
+TG_BOT_TOKEN="<TG_BOT_TOKEN>"
+TG_CHAT_ID="<TG_CHAT_ID>"
+TG_PROXY_URL=""
+```
+
+## 4. Конфигурация SSH Forced Command
+
+Secondary: `/home/xbackup/.ssh/authorized_keys`
+
+```
+from="<PRIMARY_IP>",command="/opt/xui-backups/bin/xui-backup-receiver.sh",no-pty,no-port-forwarding,no-X11-forwarding,no-agent-forwarding ssh-ed25519 <PUBLIC_KEY> backup-transport
+```
+
+SSHD Hardening (`/etc/ssh/sshd_config.d/xbackup.conf`):
+
+```
+Port <SECONDARY_SSH_PORT>
+AllowUsers root xbackup@<PRIMARY_IP>
+```
+
+## 5. Systemd Units и таймеры
+
+- **Primary Backup Timer (`/etc/systemd/system/xui-backup.timer`):**
+  `OnCalendar=*-*-* 03:20:00 UTC`, `RandomizedDelaySec=20min`.
+
+- **Secondary Retention Timer (`/etc/systemd/system/xui-backup-retention.timer`):**
+  `OnCalendar=*-*-* 04:45:00 UTC`, `Persistent=true`.
+
+- **Secondary Sync Timer (`/etc/systemd/system/xui-standby-sync.timer`):**
+  `OnCalendar=*-*-* 00/2:00:00 UTC`, `RandomizedDelaySec=300`.
