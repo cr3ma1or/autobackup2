@@ -1,0 +1,41 @@
+{
+  "tables": {
+    "inbounds": {
+      "matching_key": "tag",
+      "allowed_columns": [
+        "id", "port", "protocol", "tag", "settings", "stream_settings",
+        "enable", "sniffing"
+      ]
+    },
+    "clients": {
+      "matching_key": "uuid",
+      "fallback_matching_key": "email",
+      "allowed_columns": [
+        "inbound_id", "uuid", "email", "sub_id", "password", "auth", "flow", "security",
+        "reverse", "limit_ip", "total_gb", "expiry_time", "enable",
+        "tg_id", "group_name", "comment", "reset", "updated_at",
+        "wg_private_key", "wg_public_key", "wg_allowed_ips", "wg_pre_shared_key", "wg_keep_alive",
+        "secret", "ad_tag", "wg_forwarded_ports", "limit_hwid", "reset_day", "reset_max",
+        "traffic_reset", "traffic_reset_day", "sync_orphaned_at"
+      ]
+    },
+    "client_traffics": {
+      "matching_key": "email",
+      "allowed_columns": [
+        "up", "down", "total", "expiry_time", "enable", "reset", "last_online",
+        "last_sub_fetch", "reset_day", "reset_max", "reset_count"
+      ]
+    },
+    "settings": {
+      "matching_key": "key",
+      "allowed_keys": [
+        "subEnableRouting", "subRoutingRules"
+      ]
+    }
+  },
+  "assert_invariants": [
+    "webPort",
+    "subPort",
+    "tgBotEnable"
+  ]
+}

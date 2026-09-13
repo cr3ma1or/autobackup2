@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Name:        xui-backup
-# Version:     2.10
+# Version:     2.11
 # Example:     /usr/local/bin/xui-backup --dry-run
 # Supported:   GNU/Linux, Bash >= 4.4, GNU coreutils, GNU tar, Systemd >= 245
 # Description: 3x-ui encrypted SQLite backup + JSON payload export with
@@ -15,7 +15,7 @@
 #
 # Backup Format:
 # - Payload: SQLite backup, manifest.json, optional 3xui_export.json
-# - Archive: deterministic tar + gzip + GPG symmetric AES-256 encryption
+#   - Archive: deterministic tar + gzip + GPG dual-recipient asymmetric encryption + signing
 # - Integrity: SHA-256 sidecar plus decrypt/extract/SQLite verification
 #
 # Operational Notes:
@@ -23,7 +23,6 @@
 # - --dry-run does not create an archive, upload to Telegram/off-site storage,
 #   prune archives, or reap stale artifacts.
 # - A successful run verifies the newly created archive before delivery and rotation.
-# - Restore testing requires the same BACKUP_PASSPHRASE used for archive creation.
 #
 # CLI Flags:
 #   --dry-run   Validate environment/config and simulate rotate(); skip backup/send
@@ -32,7 +31,8 @@
 #   -h, --help  Show usage message and exit
 #
 # Environment Variables (.env / backup-transfer.env):
-#   BACKUP_PASSPHRASE      (string, required, >= 32 chars) - GPG symmetric encryption key
+#   PRIMARY_LOCAL_RECIPIENT   (string, required) - full 40-char GPG fingerprint for local recipient
+#   SECONDARY_SYNC_RECIPIENT  (string, required) - full 40-char GPG fingerprint for standby recipient
 #   SEND_TELEGRAM          (0|1, default: 0) - Enable/disable Telegram alerts
 #   TG_BOT_TOKEN           (string) - Telegram Bot token (required if SEND_TELEGRAM=1)
 #   TG_CHAT_ID             (int) - Target Telegram chat/channel ID
@@ -85,7 +85,7 @@ umask 077
 # CONSTANTS & CONFIGURATION
 # ==============================================================================
 
-readonly SCRIPT_VERSION="2.10"
+readonly SCRIPT_VERSION="2.11"
 readonly ENV_FILE="/etc/x-ui/.env"
 readonly TRANSFER_ENV_FILE="/etc/x-ui/backup-transfer.env"
 readonly BACKUP_DIR="/backup/x-ui"
@@ -94,11 +94,12 @@ readonly LOG_FILE="/var/log/xui-backup.log"
 readonly LOCK_DIR="/run/xui-backup"
 readonly LOCK_FILE="${LOCK_DIR}/lock"
 readonly WORK_BASE="${BACKUP_DIR}/.work"
+readonly GNUPG_DIR="/etc/x-ui/standby/primary-local-gnupg"
+export GNUPGHOME="$GNUPG_DIR"
 
 readonly MAX_AGE_DAYS=14
 readonly KEEP_MIN_ARCHIVES=3
 readonly MAX_SIZE_GB=2
-readonly MIN_PASSPHRASE_CHARS=32
 readonly STALE_WORK_HOURS=6
 readonly BOOTSTRAP_COMMANDS=(
   date hostname
@@ -136,7 +137,8 @@ TG_BOT_TOKEN=""
 TG_CHAT_ID=""
 TG_PROXY_URL=""
 TG_PROXY_ARGS=()
-BACKUP_PASSPHRASE=""
+PRIMARY_LOCAL_RECIPIENT=""
+SECONDARY_SYNC_RECIPIENT=""
 EXPORT_JSON=1
 
 # Off-site transfer settings (loaded from TRANSFER_ENV_FILE)
@@ -187,15 +189,20 @@ log() {
 }
 
 prepare_log_file() {
-  if [[ -e "$LOG_FILE" && -L "$LOG_FILE" ]]; then
+  if [[ -L "$LOG_FILE" ]]; then
     printf 'Refusing symlink log file: %s\n' "$LOG_FILE" >&2
+    exit 1
+  fi
+
+  if [[ -e "$LOG_FILE" && ! -f "$LOG_FILE" ]]; then
+    printf 'Refusing non-regular log file: %s\n' "$LOG_FILE" >&2
     exit 1
   fi
 
   if [[ ! -e "$LOG_FILE" ]]; then
     install -m 0600 -o root -g root /dev/null "$LOG_FILE"
   else
-    chown root:root "$LOG_FILE"
+    chown -h root:root "$LOG_FILE"
     chmod 0600 "$LOG_FILE"
   fi
 
@@ -220,6 +227,8 @@ reap_stale_work_dirs() {
   local hours="${STALE_WORK_HOURS:-24}"
   local stale_min=$((hours * 60))
   local stale
+  local parent_archive 
+  local leftover
   local list_file
 
   [[ -d "$WORK_BASE" ]] || return 0
@@ -246,7 +255,7 @@ reap_stale_work_dirs() {
   else
     while IFS= read -r -d '' stale; do
       [[ -f "$stale" ]] || continue
-      local parent_archive="${stale%.sha256}"
+      parent_archive="${stale%.sha256}"
       if [[ ! -f "$parent_archive" && "$(stat -c '%U:%G' -- "$stale")" == "root:root" ]]; then
         log WARN "Reaping dangling sidecar without archive: $(basename -- "$stale")"
         rm -f -- "$stale"
@@ -273,10 +282,11 @@ reap_stale_work_dirs() {
       log ERROR "Refusing to remove stale work dir with unsafe owner: $stale"
       continue
     }
-    gpgconf --homedir "$stale/gnupg" --kill gpg-agent 2>/dev/null || true
     log WARN "Reaping stale work dir from a previous run: $(basename -- "$stale")"
-    wipe_file "$stale/passphrase"
     wipe_file "$stale/tgtok"
+    for leftover in "$stale"/env.* "$stale"/curl.*; do
+      [[ -f "$leftover" ]] && wipe_file "$leftover"
+    done
     rm -rf -- "$stale"
   done <"$list_file"
 
@@ -289,7 +299,6 @@ cleanup() {
   local leftover
 
   if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]]; then
-    wipe_file "$TEMP_DIR/passphrase"
     wipe_file "$TEMP_DIR/tgtok"
 
     for leftover in "$TEMP_DIR"/env.* "$TEMP_DIR"/curl.*; do
@@ -309,13 +318,16 @@ cleanup() {
   [[ -n "${PART_HASH_FILE:-}" ]] && rm -f -- "$PART_HASH_FILE"
   [[ -n "${PART_FILE:-}" ]] && rm -f -- "$PART_FILE"
 
-  unset BACKUP_PASSPHRASE TG_BOT_TOKEN TRANSFER_KEY
+  flock -u 9 2>/dev/null || true
+  exec 9>&- 2>/dev/null || true
+  unset TG_BOT_TOKEN TRANSFER_KEY
   exit "$rc"
 }
 
 on_error() {
   local rc="$1"
   local line="$2"
+  local exit_code=1
 
   trap - ERR
   log ERROR "Failed at line $line; exit=$rc"
@@ -326,7 +338,10 @@ UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 Line: $line
 Exit: $rc" || true
 
-  exit "$rc"
+  # Normalize to the documented contract (see header "Exit Codes"): any
+  # runtime failure caught via ERR must surface as exit code 1, regardless
+  # of the raw exit status of the failing external command (gpg, find, etc.).
+  exit "$exit_code"
 }
 
 # ==============================================================================
@@ -340,12 +355,27 @@ make_run_id() {
   RUN_ID="${TIMESTAMP}-$$-${nonce}"
 }
 
+# NOTE: newest_archive() is currently unused (dead code) but kept for parity
+# with oldest_archive() / potential future use; fixed to the same NUL-safe
+# standard so it doesn't become a landmine if someone wires it up later.
 newest_archive() {
-  find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' | sort | tail -n 1
+  local result
+  result="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' -print0 |
+    LC_ALL=C sort -z | tail -zn 1 | tr -d '\0')" || {
+    log ERROR "Unable to enumerate archives in $BACKUP_DIR"
+    return 1
+  }
+  printf '%s' "$result"
 }
 
 oldest_archive() {
-  find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' | sort | head -n 1
+  local result
+  result="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' -print0 |
+    LC_ALL=C sort -z | head -zn 1 | tr -d '\0')" || {
+    log ERROR "Unable to enumerate archives in $BACKUP_DIR"
+    return 1
+  }
+  printf '%s' "$result"
 }
 
 archive_set_size_bytes() {
@@ -353,8 +383,12 @@ archive_set_size_bytes() {
     awk '{sum+=$1} END {print sum+0}'
 }
 
+# Writes NUL-separated, lexically sorted archive paths to $1.
+# Caller must consume via `mapfile -d '' -t arr <"$1"`.
 oldest_archives_sorted() {
-  find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' | sort
+  local dest="$1"
+  find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' -print0 |
+    LC_ALL=C sort -z >"$dest"
 }
 
 check_disk_space() {
@@ -375,7 +409,7 @@ check_disk_space() {
 
 required_work_mb() {
   local db_bytes db_mb factor
-  db_bytes="$(stat -c %s "$DB_PATH" 2>/dev/null || echo 0)"
+  db_bytes="$(stat -c %s -- "$DB_PATH" 2>/dev/null || echo 0)"
   factor=4
   [[ "${EXPORT_JSON:-1}" == 1 ]] && factor=6
   db_mb=$(((db_bytes * factor) / 1024 / 1024))
@@ -443,7 +477,9 @@ PY
 # ==============================================================================
 
 load_env() {
-  load_kv_file "$ENV_FILE" 'BACKUP_PASSPHRASE,SEND_TELEGRAM,TG_BOT_TOKEN,TG_CHAT_ID,TG_PROXY_URL,EXPORT_JSON'
+  load_kv_file "$ENV_FILE" 'PRIMARY_LOCAL_RECIPIENT,SECONDARY_SYNC_RECIPIENT,PRIMARY_LOCAL_RECIPIENT,SECONDARY_SYNC_RECIPIENT,SEND_TELEGRAM,TG_BOT_TOKEN,TG_CHAT_ID,TG_PROXY_URL,EXPORT_JSON' || return 1
+  : "${PRIMARY_LOCAL_RECIPIENT:=${PRIMARY_LOCAL_RECIPIENT:-}}"
+  : "${SECONDARY_SYNC_RECIPIENT:=${SECONDARY_SYNC_RECIPIENT:-}}"
 }
 
 load_transfer_config() {
@@ -496,7 +532,7 @@ load_transfer_config() {
   }
 
   local kh_stat
-  kh_stat="$(stat -c '%U:%G:%a' "$TRANSFER_KNOWN_HOSTS")"
+  kh_stat="$(stat -c '%U:%G:%a' -- "$TRANSFER_KNOWN_HOSTS")"
   if [[ "$kh_stat" != "root:root:644" && "$kh_stat" != "root:root:600" ]]; then
     log ERROR 'Offsite delivery disabled: unsafe known_hosts owner/mode'
     TRANSFER_ENABLED=0
@@ -523,18 +559,41 @@ require_cmd() {
   done
 }
 
+# Verify that a directory and *all* of its parent components up to "/"
+# are owned by root and not group/world-writable. Prevents symlink-swap /
+# directory-replacement attacks via an insecure ancestor directory.
+require_safe_parent_chain() {
+  local dir="$1" parent
+  parent="$(dirname -- "$dir")"
+  while [[ "$parent" != "/" && "$parent" != "." ]]; do
+    local mode
+    mode="$(stat -c '%U:%a' -- "$parent" 2>/dev/null)" || return 1
+    [[ "$mode" == root:* ]] || { log ERROR "Unsafe ancestor owner: $parent"; return 1; }
+    [[ "${mode#*:}" =~ ^[0-7]00$|^[0-7]?[0-5]?[0-5]$ ]] || {
+      log ERROR "Unsafe ancestor permissions: $parent ($mode)"; return 1; }
+    parent="$(dirname -- "$parent")"
+  done
+}
+
 prepare_backup_tree() {
   [[ -d "$BACKUP_DIR" ]] || install -d -m 0700 -o root -g root "$BACKUP_DIR"
+  require_safe_parent_chain "$BACKUP_DIR" || exit 1
 
-  [[ "$(stat -c '%U:%G:%a' "$BACKUP_DIR")" == "root:root:700" ]] || {
+  [[ "$(stat -c '%U:%G:%a' -- "$BACKUP_DIR")" == "root:root:700" ]] || {
     log ERROR "Unsafe backup directory owner/mode: $BACKUP_DIR"
     exit 1
   }
 
   install -d -m 0700 -o root -g root "$WORK_BASE"
 
-  [[ "$(stat -c '%U:%G:%a' "$WORK_BASE")" == "root:root:700" ]] || {
+  [[ "$(stat -c '%U:%G:%a' -- "$WORK_BASE")" == "root:root:700" ]] || {
     log ERROR "Unsafe work directory owner/mode: $WORK_BASE"
+    exit 1
+  }
+  install -d -m 0700 -o root -g root "$GNUPG_DIR"
+  require_safe_parent_chain "$GNUPG_DIR" || exit 1
+  [[ "$(stat -c '%U:%G:%a' -- "$GNUPG_DIR")" == "root:root:700" ]] || {
+    log ERROR "Unsafe GNUPGHOME directory owner/mode: $GNUPG_DIR"
     exit 1
   }
 }
@@ -552,30 +611,38 @@ validate() {
     log ERROR 'Missing .env or database'
     exit 1
   }
-  [[ "$(stat -c '%U:%G:%a' "$ENV_FILE")" == "root:root:600" ]] || {
+  [[ "$(stat -c '%U:%G:%a' -- "$ENV_FILE")" == "root:root:600" ]] || {
     log ERROR "Unsafe .env owner/mode: $ENV_FILE"
     exit 1
   }
-
-  local required_mb
-  required_mb="$(required_work_mb)"
-  check_disk_space "$BACKUP_DIR" "$required_mb"
-  check_disk_space "/" "$required_mb"
 
   if ! load_env; then
     log ERROR "Invalid configuration file: $ENV_FILE"
     exit 1
   fi
 
-  if [[ -z "${BACKUP_PASSPHRASE:-}" ]]; then
-    log ERROR 'BACKUP_PASSPHRASE is required'
-    exit 1
-  fi
+  local required_mb
+  required_mb="$(required_work_mb)"
+  check_disk_space "$BACKUP_DIR" "$required_mb"
+  check_disk_space "/" "$required_mb"
 
-  if ((${#BACKUP_PASSPHRASE} < MIN_PASSPHRASE_CHARS)); then
-    log ERROR "BACKUP_PASSPHRASE must be at least ${MIN_PASSPHRASE_CHARS} characters"
-    exit 1
-  fi
+  if [[ -z "${PRIMARY_LOCAL_RECIPIENT:-}" ]]; then log ERROR 'PRIMARY_LOCAL_RECIPIENT is required'; exit 1; fi
+
+  if [[ -z "${SECONDARY_SYNC_RECIPIENT:-}" ]]; then log ERROR 'SECONDARY_SYNC_RECIPIENT is required'; exit 1; fi
+
+  gpg --batch --list-secret-keys "$PRIMARY_LOCAL_RECIPIENT" >/dev/null 2>&1 || { log ERROR "PRIMARY_LOCAL_RECIPIENT secret key not found in GNUPGHOME (required for self-verification)"; exit 1; }
+  gpg --batch --list-keys "$SECONDARY_SYNC_RECIPIENT" >/dev/null 2>&1 || { log ERROR "SECONDARY_SYNC_RECIPIENT public key not found in GNUPGHOME"; exit 1; }
+
+  # Soft-warn (non-fatal) if recipients are not full 40-char fingerprints:
+  # email/short-ID lookups with --trust-model always can silently pick an
+  # unintended key if the keyring ever contains a duplicate/expired match.
+  for _rcpt in "$PRIMARY_LOCAL_RECIPIENT" "$SECONDARY_SYNC_RECIPIENT"; do
+    [[ "$_rcpt" =~ ^[0-9A-Fa-f]{40}$ ]] || {
+      log ERROR "Recipient '$_rcpt' is not a full 40-char GPG fingerprint; required because encryption uses --trust-model always"
+      exit 1
+    }
+  done
+
 
   : "${SEND_TELEGRAM:=0}"
   [[ "$SEND_TELEGRAM" =~ ^[01]$ ]] || {
@@ -702,15 +769,7 @@ send_tg() {
   wipe_file "$cfg"
 
   if ((rc == 0)); then
-    python3 - "$response" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding='utf-8') as f:
-    response = json.load(f)
-raise SystemExit(0 if response.get('ok') is True else 1)
-PY
-    rc=$?
+    python3 -c 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); sys.exit(0 if r.get("ok") is True else 1)' "$response" || rc=1
   fi
 
   rm -f -- "$response"
@@ -851,21 +910,21 @@ PY
 # JSON export consistency, and SQLite integrity.
 verify_archive() {
   local latest="$1"
-  local hash
+  local sidecar_path
   local test_dir
   local payload
   local table_count
-  local hash_basename
+  local sidecar_basename
 
   [[ -f "$latest" ]] || {
     log ERROR "verification failed: archive does not exist: $latest"
     return 1
   }
 
-  hash="${latest}.sha256"
-  hash_basename="$(basename -- "$hash")"
+  sidecar_path="${latest}.sha256"
+  sidecar_basename="$(basename -- "$sidecar_path")"
 
-  if ! (cd "$BACKUP_DIR" && sha256sum -c --status -- "$hash_basename"); then
+  if ! (cd -- "$BACKUP_DIR" && sha256sum -c --status -- "$sidecar_basename"); then
     log ERROR "verification failed: sha256 mismatch or missing sidecar for $(basename -- "$latest")"
     return 1
   fi
@@ -876,11 +935,9 @@ verify_archive() {
   }
   payload="$test_dir/payload.tar.gz"
 
-  if ! gpg --batch --yes --pinentry-mode loopback --no-symkey-cache \
-    --passphrase-file "$TEMP_DIR/passphrase" \
-    --output "$payload" \
-    --decrypt "$latest"; then
+  if ! gpg --batch --yes --decrypt --output "$payload" "$latest"; then
     log ERROR "verification failed: gpg decrypt failed for $(basename -- "$latest")"
+
     rm -rf -- "$test_dir"
     return 1
   fi
@@ -894,10 +951,7 @@ verify_archive() {
   fi
 
   case "$members" in
-    $'manifest.json
-x-ui.db' | $'3xui_export.json
-manifest.json
-x-ui.db')
+    $'manifest.json\nx-ui.db' | $'3xui_export.json\nmanifest.json\nx-ui.db')
       ;;
     *)
       log ERROR "verification failed: invalid archive composition for $(basename -- "$latest")"
@@ -964,15 +1018,23 @@ PY
 
   table_count="$(sqlite3 "$test_dir/x-ui.db" \
     "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%';")" || {
+    log ERROR "verification failed: sqlite_schema query failed for $(basename -- "$latest")"
+    wipe_file "$test_dir/x-ui.db"
+    [[ -f "$test_dir/3xui_export.json" ]] && wipe_file "$test_dir/3xui_export.json"
+    [[ -f "$payload" ]] && wipe_file "$payload"
     rm -rf -- "$test_dir"
     return 1
   }
 
+  wipe_file "$test_dir/x-ui.db"
+  [[ -f "$test_dir/3xui_export.json" ]] && wipe_file "$test_dir/3xui_export.json"
+  [[ -f "$payload" ]] && wipe_file "$payload"  
   rm -rf -- "$test_dir"
   log INFO "archive_verification_ok; archive=$(basename -- "$latest"); application_tables=$table_count"
   return 0
 }
 
+WEEKLY_TEST_TARGET=""
 weekly_test() {
   local oldest
 
@@ -989,6 +1051,7 @@ weekly_test() {
     return 0
   fi
 
+  WEEKLY_TEST_TARGET="$oldest"
   if ! verify_archive "$oldest"; then
     log ERROR "weekly restore test failed: $(basename -- "$oldest")"
     return 1
@@ -1001,17 +1064,17 @@ weekly_test() {
 rotate() {
   local max size old old_size side_size
   local -a archives=()
-  local archive_list
+  local list_file
+  local action_tag="no-prune"
+  (( DRY_RUN )) && action_tag="dry-run"
   local -a age_candidates=()
 
-  archive_list="$(oldest_archives_sorted)" || {
+  mapfile -d '' -t age_candidates < <(
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' -print0 | LC_ALL=C sort -z
+  ) || {
     log ERROR "Unable to enumerate archives in $BACKUP_DIR"
     return 1
   }
-
-  if [[ -n "$archive_list" ]]; then
-    mapfile -t age_candidates <<<"$archive_list"
-  fi
 
   local total_count=${#age_candidates[@]}
   local deletable=$((total_count - KEEP_MIN_ARCHIVES))
@@ -1027,7 +1090,7 @@ rotate() {
 
       if ((age_seconds > MAX_AGE_DAYS * 86400)); then
         if ((DRY_RUN || NO_PRUNE)); then
-          log INFO "[$([ "$DRY_RUN" -eq 1 ] && echo dry-run || echo no-prune)] skip age delete: $(basename -- "$candidate")"
+          log INFO "[$action_tag] skip age delete: $(basename -- "$candidate")"
         else
           rm -f -- "$candidate" "${candidate}.sha256"
           log WARN "Rotated by age: $(basename -- "$candidate")"
@@ -1043,14 +1106,14 @@ rotate() {
     return 1
   }
 
-  archive_list="$(oldest_archives_sorted)" || {
+  list_file="$(mktemp "$TEMP_DIR/rotate-size.XXXXXX")"
+  if ! oldest_archives_sorted "$list_file"; then
     log ERROR "Unable to enumerate archives in $BACKUP_DIR"
+    rm -f -- "$list_file"
     return 1
-  }
-
-  if [[ -n "$archive_list" ]]; then
-    mapfile -t archives <<<"$archive_list"
   fi
+  mapfile -d '' -t archives <"$list_file"
+  rm -f -- "$list_file"
 
   local total_archives=${#archives[@]}
   for old in "${archives[@]}"; do
@@ -1065,7 +1128,7 @@ rotate() {
     fi
 
     if ((DRY_RUN || NO_PRUNE)); then
-      log INFO "[$([ "$DRY_RUN" -eq 1 ] && echo dry-run || echo no-prune)] skip size delete: $(basename -- "$old"); bytes=$((old_size + side_size))"
+      log INFO "[$action_tag] skip size delete: $(basename -- "$old"); bytes=$((old_size + side_size))"
     else
       rm -f -- "$old" "${old}.sha256"
       log WARN "Rotated by size: $(basename -- "$old"); bytes=$((old_size + side_size))"
@@ -1073,7 +1136,7 @@ rotate() {
 
     if ((! NO_PRUNE || DRY_RUN)); then
       size=$((size - old_size - side_size))
-      ((total_archives--))
+      total_archives=$((total_archives - 1))
     fi
   done
 
@@ -1104,14 +1167,13 @@ deliver_offsite() {
   local archive="$1"
   local hash="$2"
   local size="$3"
-  local name output rc
+  local name output rc=0
 
   [[ "$TRANSFER_ENABLED" == 1 ]] || return 0
 
   name="$(basename -- "$archive")"
   output="$(mktemp "$TEMP_DIR/offsite.XXXXXX")"
 
-  set +e
   ssh -i "$TRANSFER_KEY" -p "$TRANSFER_PORT" \
     -o BatchMode=yes \
     -o IdentitiesOnly=yes \
@@ -1127,9 +1189,7 @@ deliver_offsite() {
     -o LogLevel=ERROR \
     "${TRANSFER_USER}@${TRANSFER_HOST}" \
     "receive ${name} ${hash} ${size}" \
-    <"$archive" >"$output" 2>&1
-  rc=$?
-  set -e
+    <"$archive" >"$output" 2>&1 || rc=$?
 
   if ((rc == 0)) && grep -qx "OK ${name} ${hash} ${size}" "$output"; then
     log INFO "offsite_delivery_ok; archive=$name; bytes=$size; sha256=$hash"
@@ -1147,6 +1207,7 @@ deliver_offsite() {
 # ==============================================================================
 
 main() {
+  parse_args "$@"
   [[ $EUID -eq 0 ]] || {
     echo "Must run as root" >&2
     exit 1
@@ -1186,13 +1247,6 @@ main() {
 
   reap_stale_work_dirs
 
-  export GNUPGHOME="$TEMP_DIR/gnupg"
-  install -d -m 0700 -o root -g root "$GNUPGHOME"
-
-  printf %s "$BACKUP_PASSPHRASE" >"$TEMP_DIR/passphrase"
-  chmod 600 "$TEMP_DIR/passphrase"
-  unset BACKUP_PASSPHRASE
-
   local db json manifest tarfile gzipfile part final hpart hfinal hash size
 
   db="$TEMP_DIR/x-ui.db"
@@ -1221,14 +1275,9 @@ main() {
 
   gzip -n -6 -c "$tarfile" >"$gzipfile"
 
-  # NOTE: s2k-count=65011712 (the maximum value defined by the OpenPGP spec) - a
-  # hardened key-derivation function that adds a noticeable delay (several seconds)
-  # to encryption/decryption. Make sure the systemd unit / cron job does not set
-  # TimeoutStartSec (or an equivalent timeout) shorter than that.
-  gpg --batch --yes --pinentry-mode loopback --no-symkey-cache --symmetric \
-    --cipher-algo AES256 --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 \
-    --compress-algo none --passphrase-file "$TEMP_DIR/passphrase" \
-    --output "$part" "$gzipfile"
+  gpg --batch --yes --trust-model always \
+    -r "$PRIMARY_LOCAL_RECIPIENT" -r "$SECONDARY_SYNC_RECIPIENT" \
+    --sign --encrypt --output "$part" "$gzipfile"
 
   hash="$(sha256sum -- "$part" | awk '{print $1}')"
   if [[ ! "$hash" =~ ^[[:xdigit:]]{64}$ ]]; then
@@ -1236,11 +1285,18 @@ main() {
     exit 1
   fi
 
-  printf '%s  %s\n' "$hash" "$(basename "$final")" >"$hpart"
+  # CONTRACT: Sidecar (.sha256) is published BEFORE archive (.tar.gz.gpg).
+  # Consumers (discover_backup, verify_archive, restore) scan for archives.
+  # Publishing sidecar first ensures that whenever an archive appears on disk,
+  # its companion checksum sidecar is ALREADY present and accessible.
+  # If a crash occurs between the two moves, cleanup() rolls back the sidecar,
+  # and reap_stale_work_dirs() reaps any dangling sidecars after STALE_WORK_HOURS.
+  
+  printf '%s  %s\n' "$hash" "$(basename -- "$final")" >"$hpart"
   chmod 600 "$part" "$hpart"
-  mv -f -- "$hpart" "$hfinal"
+  mv -f -- "$hpart" "$hfinal"      # Sidecar published FIRST
   PART_HASH_FILE=""
-  mv -f -- "$part" "$final"
+  mv -f -- "$part" "$final"        # Archive published SECOND
   PART_FILE=""
   FINAL_FILE=""
   FINAL_HASH_FILE=""
@@ -1252,7 +1308,7 @@ Host: $HOST_LABEL
 UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 Archive: $(basename -- "$final")
 Local archive was created but failed restore verification." || true
-    return 1
+    exit 1
   fi
 
   size="$(stat -c %s -- "$final")"
@@ -1272,9 +1328,12 @@ See /var/log/xui-backup.log for diagnostic." || true
 
   rotate || log WARN "rotation failed; local archive kept"
 
-  weekly_test || log WARN "weekly restore test failed; local archive kept"
+  if ! weekly_test; then
+    log WARN "weekly restore test failed; local archive kept"
+    send_tg text "⚠️ 3x-ui backup WARNING: Weekly restore test failed on ${HOST_LABEL} for oldest archive $(basename -- "${WEEKLY_TEST_TARGET:-unknown}")" || true
+  fi
 
-  log INFO "Local backup completed; archive=$(basename "$final"); sha256=$hash"
+  log INFO "Local backup completed; archive=$(basename -- "$final"); sha256=$hash"
 
   if [[ "$SEND_TELEGRAM" == 1 ]]; then
     send_tg file "$final" || log WARN "Archive created, but Telegram document upload failed"
@@ -1283,9 +1342,9 @@ See /var/log/xui-backup.log for diagnostic." || true
   send_tg text "3x-ui backup OK
 Host: $HOST_LABEL
 UTC: $TIMESTAMP
-Archive: $(basename "$final")
+Archive: $(basename -- "$final")
 SHA-256: $hash" || true
-  return 0
+  exit 0
 }
 
 usage() {
@@ -1326,5 +1385,4 @@ parse_args() {
   done
 }
 
-parse_args "$@"
 main "$@"

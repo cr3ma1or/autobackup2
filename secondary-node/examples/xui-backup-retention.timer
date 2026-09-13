@@ -1,0 +1,12 @@
+[Unit]
+Description=3x-ui Backup Retention Cleanup
+Requires=xui-backup-retention.service
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

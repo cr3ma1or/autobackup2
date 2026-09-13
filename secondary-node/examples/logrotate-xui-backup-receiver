@@ -1,0 +1,9 @@
+/opt/xui-backups/receiver.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 xbackup xbackup
+}

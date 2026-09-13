@@ -1,0 +1,18 @@
+[Unit]
+Description=3x-ui Backup Retention Cleanup (incoming archive rotation)
+Requires=xui-backup-retention.timer
+
+[Service]
+Type=oneshot
+User=xbackup
+Group=xbackup
+ExecStart=/usr/local/bin/xui-backup-retention
+Nice=19
+IOSchedulingClass=idle
+ProtectSystem=strict
+ReadWritePaths=/opt/xui-backups /var/log
+ProtectHome=true
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

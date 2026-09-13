@@ -256,12 +256,18 @@ check_rate_limit() {
 part=""
 part_hash=""
 name=""
+final=""
+hash_file=""
 
 cleanup() {
   local -i exit_code=$?
   trap - EXIT ERR INT TERM HUP
   flock -u 9 2>/dev/null || true
   exec 9>&- 2>/dev/null || true
+  # Roll back published sidecar if failure occurs before archive is published
+  if [[ -n "${hash_file:-}" && -f "$hash_file" && -n "${final:-}" && ! -f "$final" ]]; then
+    rm -f -- "$hash_file" 2>/dev/null || true
+  fi
   rm -f -- "${part:-}" "${part_hash:-}" 2>/dev/null || true
   exit "$exit_code"
 }
@@ -305,7 +311,8 @@ main() {
   local expected declared_size
   local original command_regex storage_metrics _usage_pct
   local -i needed_kb avail_kb
-  local final="" hash_file=""
+  final=""
+  hash_file=""
   local final_size actual_size actual expected_sidecar
 
   # ----------------------------------------------------------------------------
@@ -424,8 +431,18 @@ main() {
         printf '%s\n' "$expected_sidecar" |
         (cd "$INCOMING_DIR" && sha256sum -c --status -); then
 
-        # Drain the retransmitted payload before returning the idempotent result.
-        head -c "$declared_size" >/dev/null || true
+        # CRITICAL FIX D2: Fully drain retransmitted payload to prevent SIGPIPE
+        # head -c may return early without consuming all bytes, leaving data in SSH buffer
+        # Use dd with explicit block count for robustness
+        dd if=/dev/stdin of=/dev/null bs=1M count=$(( (declared_size + 1048575) / 1048576 )) \
+          2>/dev/null || {
+          # Fallback: loop-based drain if dd fails
+          local remaining="$declared_size"
+          while (( remaining > 0 )); do
+            read -r -N "$(( remaining < 1048576 ? remaining : 1048576 ))" _ || break
+            (( remaining -= ${#_} ))
+          done
+        }
 
         log INFO \
           "idempotent_delivery_skipped archive=$name bytes=$declared_size sha256=$expected"
@@ -472,8 +489,18 @@ main() {
           "artifact=sidecar archive=$name reason=orphan_archive_repair"
       fi
 
-      # Drain the retransmitted payload before returning the repaired result.
-      head -c "$declared_size" >/dev/null || true
+      # CRITICAL FIX D2: Fully drain retransmitted payload to prevent SIGPIPE
+      # head -c may return early without consuming all bytes, leaving data in SSH buffer
+      # Use dd with explicit block count for robustness
+      dd if=/dev/stdin of=/dev/null bs=1M count=$(( (declared_size + 1048575) / 1048576 )) \
+        2>/dev/null || {
+        # Fallback: loop-based drain if dd fails
+        local remaining="$declared_size"
+        while (( remaining > 0 )); do
+          read -r -N "$(( remaining < 1048576 ? remaining : 1048576 ))" _ || break
+          (( remaining -= ${#_} ))
+        done
+      }
 
       log WARN \
         "orphan_archive_sidecar_repaired archive=$name bytes=$declared_size sha256=$expected"
