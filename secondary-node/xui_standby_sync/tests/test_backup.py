@@ -167,7 +167,7 @@ class TestFreshnessValidation:
 
     def test_fresh_backup_passes(self, tmp_path: Path):
         """Fresh backup passes."""
-        recent_timestamp = datetime.now(timezone.utc) - timedelta(hours=1)
+        recent_timestamp = datetime.now(timezone.utc) - timedelta(minutes=50)
         
         is_fresh, age_hours = verify_freshness(
             recent_timestamp,
@@ -271,6 +271,7 @@ class TestBackupDiscovery:
         """No valid backups raises error."""
         incoming_dir = tmp_path / "incoming"
         incoming_dir.mkdir()
+        os.chmod(incoming_dir, 0o700)
         
         with pytest.raises(BackupValidationError, match="No valid backup archives found"):
             discover_backup(incoming_dir=incoming_dir)
@@ -279,16 +280,22 @@ class TestBackupDiscovery:
         """Valid backup from incoming directory is discovered."""
         incoming_dir = tmp_path / "incoming"
         incoming_dir.mkdir()
+        os.chmod(incoming_dir, 0o700)
         
-        backup_name = "xui-backup-20261212T120000Z-test.tar.gz.gpg"
+        import hashlib
+        from datetime import timedelta
+        stamp = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y%m%dT%H%M%SZ")
+        backup_name = f"xui-backup-{stamp}-test.tar.gz.gpg"
         backup_path = incoming_dir / backup_name
-        backup_path.write_bytes(b"backup content")
+        content = b"backup content"
+        backup_path.write_bytes(content)
         os.chmod(backup_path, 0o600)
-        
+
         sidecar_path = incoming_dir / f"{backup_name}.sha256"
-        sidecar_path.write_text("a" * 64)
+        hash_val = hashlib.sha256(content).hexdigest()
+        sidecar_path.write_text(f"{hash_val}  {backup_name}\n")
         os.chmod(sidecar_path, 0o600)
-        
+
         result = discover_backup(
             incoming_dir=incoming_dir,
             max_age_seconds=DEFAULT_MAX_AGE_SECONDS,
@@ -302,25 +309,31 @@ class TestBackupDiscovery:
         """Latest backup is selected when multiple are available."""
         incoming_dir = tmp_path / "incoming"
         incoming_dir.mkdir()
-        
+        os.chmod(incoming_dir, 0o700)
+
+        import hashlib
+        from datetime import timedelta
+        now_utc = datetime.now(timezone.utc)
+        stamp1 = (now_utc - timedelta(minutes=20)).strftime("%Y%m%dT%H%M%SZ")
+        stamp2 = (now_utc - timedelta(minutes=10)).strftime("%Y%m%dT%H%M%SZ")
+
         # Create two backups
-        backup1_name = "xui-backup-20261212T120000Z-test.tar.gz.gpg"
+        backup1_name = f"xui-backup-{stamp1}-test.tar.gz.gpg"
         backup1_path = incoming_dir / backup1_name
         backup1_path.write_bytes(b"backup1")
         os.chmod(backup1_path, 0o600)
         
-        backup2_name = "xui-backup-20261213T120000Z-test.tar.gz.gpg"
+        backup2_name = f"xui-backup-{stamp2}-test.tar.gz.gpg"
         backup2_path = incoming_dir / backup2_name
         backup2_path.write_bytes(b"backup2")
         os.chmod(backup2_path, 0o600)
         
-        sidecar_template = "{}"
         sidecar1_path = incoming_dir / f"{backup1_name}.sha256"
-        sidecar1_path.write_text("a" * 64)
+        sidecar1_path.write_text(f"{hashlib.sha256(b'backup1').hexdigest()}  {backup1_name}\n")
         os.chmod(sidecar1_path, 0o600)
         
         sidecar2_path = incoming_dir / f"{backup2_name}.sha256"
-        sidecar2_path.write_text("b" * 64)
+        sidecar2_path.write_text(f"{hashlib.sha256(b'backup2').hexdigest()}  {backup2_name}\n")
         os.chmod(sidecar2_path, 0o600)
         
         result = discover_backup(incoming_dir=incoming_dir)

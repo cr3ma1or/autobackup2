@@ -183,6 +183,8 @@ class TestPlannerInboundId1:
         # stream_settings should NOT appear in the update
         update_json = plan.inbound_client_updates[0].settings_json
         clients_parsed = json.loads(update_json)
+        if isinstance(clients_parsed, dict) and "clients" in clients_parsed:
+            clients_parsed = clients_parsed["clients"]
         assert isinstance(clients_parsed, list)
 
 

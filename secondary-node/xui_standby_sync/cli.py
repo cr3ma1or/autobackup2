@@ -8,6 +8,7 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from .commands import run_command
 
 from .backup import discover_backup
 from .config import build_runtime_config, load_values
@@ -16,8 +17,7 @@ from .exceptions import SyncError
 from .locks import LockSet
 from .models import RuntimeConfig
 from .rollback import restore_rollback_snapshot
-from .service import start_service, stop_service
-from .status import status_json
+from .status import collect_status, status_json
 from .workflow import result_json, run_sync
 
 
@@ -37,7 +37,9 @@ def _parser() -> argparse.ArgumentParser:
     check_backup.add_argument("--unsafe-backup-path", action="store_true")
     rollback = subparsers.add_parser("rollback")
     _add_common_options(rollback)
-    rollback.add_argument("--snapshot", type=Path)
+    rollback_target = rollback.add_mutually_exclusive_group(required=True)
+    rollback_target.add_argument("--snapshot", type=Path)
+    rollback_target.add_argument("--run-id", type=str)
     rollback.add_argument("--yes", action="store_true", required=True)
     status = subparsers.add_parser("status")
     _add_common_options(status)
@@ -86,7 +88,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "status":
         config = _runtime_config(args)
-        output = status_json(config.paths, service_name=config.policy.service_name)
+        if args.json:
+            output = status_json(config.paths, service_name=config.policy.service_name)
+        else:
+            status_data = collect_status(config.paths, service_name=config.policy.service_name)
+            output = "\n".join(f"{k}: {v}" for k, v in status_data.items())
         print(output)
         return 0
     try:
@@ -122,8 +128,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0 if metadata.is_fresh or config.options.force else 1
         if args.command == "rollback":
-            if args.snapshot is None:
-                raise SyncError("--snapshot is required for rollback")
+            snapshot_path = args.snapshot
+            if snapshot_path is None and getattr(args, "run_id", None):
+                snapshot_path = config.paths.snapshots_dir / f"snapshot-{args.run_id}.db"
             if (
                 config.paths.standby_mode_file.read_text(encoding="utf-8").strip()
                 != "STANDBY"
@@ -133,12 +140,20 @@ def main(argv: list[str] | None = None) -> int:
                 config.paths.sync_lock_path,
                 config.paths.store_lock_path,
             ):
-                stop_service(config.policy.service_name, config.policy.command_timeout)
+                run_command(
+                    ["systemctl", "stop", config.policy.service_name],
+                    timeout=config.policy.command_timeout,
+                    check=True,
+                )
                 restore_rollback_snapshot(
                     target_db=config.paths.target_db,
-                    snapshot_path=args.snapshot,
+                    snapshot_path=snapshot_path,
                 )
-                start_service(config.policy.service_name, config.policy.command_timeout)
+                run_command(
+                    ["systemctl", "start", config.policy.service_name],
+                    timeout=config.policy.command_timeout,
+                    check=True,
+                )
             rollback_payload: dict[str, Any] = {
                 "success": True,
                 "snapshot": str(args.snapshot),

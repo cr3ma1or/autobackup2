@@ -159,7 +159,7 @@ def _extract_archive(
 ) -> None:
     context = multiprocessing.get_context("fork")
     result_queue = context.Queue(maxsize=1)
-    worker = context.Process(  # type: ignore[attr-defined]
+    worker = context.Process(
         target=_extract_worker,
         args=(str(payload_path), str(work_dir), max_size, result_queue),
     )

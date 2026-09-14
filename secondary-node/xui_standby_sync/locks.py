@@ -49,7 +49,7 @@ class LockSet:
                 handle.close()
                 raise SecurityViolationError(f"Unsafe lock file: {path}")
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 handle.close()
                 raise LockBusyError(f"Lock is busy: {path}") from error

@@ -30,9 +30,10 @@ def apply_database_sync_plan(
         raise PlanValidationError("Cannot apply invalid database plan")
     # CRITICAL FIX D4: Use default isolation_level for proper transaction management
     # isolation_level=None causes autocommit mode, breaking ROLLBACK semantics
-    connection = sqlite3.connect(target_db)
+    connection = sqlite3.connect(target_db, isolation_level=None)
     connection.row_factory = sqlite3.Row
     try:
+        connection.execute("BEGIN IMMEDIATE;")
         if _current_fingerprint(connection) != plan.target_fingerprint:
             raise PlanExecutionError(
                 "Target database fingerprint changed since planning"
@@ -62,13 +63,17 @@ def apply_database_sync_plan(
             _ensure_not_cancelled(is_cancelled)
 
         for inbound_settings_op in plan.inbound_client_updates:
-            connection.execute(
+            cursor = connection.execute(
                 "UPDATE inbounds SET settings = ? WHERE id = ?;",
                 (
                     inbound_settings_op.settings_json,
                     inbound_settings_op.target_inbound_id,
                 ),
             )
+            if cursor.rowcount == 0:
+                raise PlanExecutionError(
+                    f"Target inbound {inbound_settings_op.target_inbound_id} not found"
+                )
             _ensure_not_cancelled(is_cancelled)
 
         client_columns = _columns(connection, "clients")
@@ -89,10 +94,14 @@ def apply_database_sync_plan(
         for client_update_op in plan.client_updates:
             values = dict(client_update_op.values)
             assignments = ", ".join(f"{key} = ?" for key in values)
-            connection.execute(
+            cursor = connection.execute(
                 f"UPDATE clients SET {assignments} WHERE id = ?;",
                 (*values.values(), client_update_op.target_client_id),
             )
+            if cursor.rowcount == 0:
+                raise PlanExecutionError(
+                    f"Target client {client_update_op.target_client_id} not found"
+                )
             _ensure_not_cancelled(is_cancelled)
 
         for client_id in plan.client_deletes:
@@ -117,10 +126,14 @@ def apply_database_sync_plan(
         for traffic_update_op in plan.traffic_updates:
             values = dict(traffic_update_op.values)
             assignments = ", ".join(f"{key} = ?" for key in values)
-            connection.execute(
+            cursor = connection.execute(
                 f"UPDATE client_traffics SET {assignments} WHERE id = ?;",
                 (*values.values(), traffic_update_op.target_traffic_id),
             )
+            if cursor.rowcount == 0:
+                raise PlanExecutionError(
+                    f"Target client traffic {traffic_update_op.target_traffic_id} not found"
+                )
             _ensure_not_cancelled(is_cancelled)
 
         for traffic_id in plan.traffic_deletes:

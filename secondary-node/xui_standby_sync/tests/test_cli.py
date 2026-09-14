@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import os
 import sqlite3
 from pathlib import Path
@@ -153,14 +154,16 @@ class TestCliCheckBackup:
 
     def test_check_backup_json_output(self, tmp_path: Path):
         """check-backup --json outputs valid JSON."""
-        backup_path = tmp_path / "backup.tar.gz.gpg"
+        now_str = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_name = f"xui-backup-{now_str}-test.tar.gz.gpg"
+        backup_path = tmp_path / backup_name
         backup_path.write_bytes(b"backup content")
         os.chmod(backup_path, 0o600)
 
-        sidecar_path = tmp_path / "backup.tar.gz.gpg.sha256"
+        sidecar_path = tmp_path / f"{backup_name}.sha256"
         import hashlib
         hash_val = hashlib.sha256(b"backup content").hexdigest()
-        sidecar_path.write_text(f"{hash_val}  backup.tar.gz.gpg\n")
+        sidecar_path.write_text(f"{hash_val}  {backup_name}\n")
         os.chmod(sidecar_path, 0o600)
 
         with patch("xui_standby_sync.cli.load_values", return_value={}):

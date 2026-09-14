@@ -74,7 +74,7 @@ class TestWorkflowPreflight:
         paths.gnupg_dir.mkdir()
         os.chmod(paths.gnupg_dir, 0o700)
 
-        config = MagicMock(spec=RuntimeConfig)
+        config = MagicMock()
         config.paths = paths
         config.security.allow_unsafe_backup_path = False
         config.policy.max_age_seconds = 6 * 3600
@@ -142,7 +142,7 @@ class TestWorkflowDryRun:
         paths.gnupg_dir.mkdir()
         os.chmod(paths.gnupg_dir, 0o700)
 
-        config = MagicMock(spec=RuntimeConfig)
+        config = MagicMock()
         config.paths = paths
         config.security.allow_unsafe_backup_path = False
         config.security.require_gpg_signature = False

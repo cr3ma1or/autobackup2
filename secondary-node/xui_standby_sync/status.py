@@ -24,8 +24,8 @@ def _lock_busy(path: Path) -> bool:
         return False
     try:
         with path.open("a+") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
-            fcntl.flock(handle, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle, fcntl.LOCK_UN)
             return False
     except (BlockingIOError, OSError):
         return True
