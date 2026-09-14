@@ -14,7 +14,7 @@ from xui_standby_sync.config import (
     parse_custom_reserved_ports,
     parse_fingerprints,
 )
-from xui_standby_sync.constants import ALLOWLIST_PATH, TARGET_DB_PATH
+from xui_standby_sync.constants import TARGET_DB_PATH
 from xui_standby_sync.exceptions import ConfigurationError
 
 

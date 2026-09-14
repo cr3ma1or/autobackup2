@@ -8,8 +8,6 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from xui_standby_sync.models import PathsConfig
 from xui_standby_sync.status import collect_status, status_json
 

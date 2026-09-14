@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 from pathlib import Path
@@ -24,7 +23,6 @@ from xui_standby_sync.models import (
     DatabaseSyncPlan,
     InboundClientSettingsUpdateOperation,
     InboundCreateOperation,
-    InboundDeleteOperation,
     SettingsUpdateOperation,
     TrafficInsertOperation,
     TrafficUpdateOperation,

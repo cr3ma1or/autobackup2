@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import os
-import stat
 import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
-from xui_standby_sync.constants import STORE_LOCK_FILE, SYNC_LOCK_FILE
 from xui_standby_sync.exceptions import LockBusyError, SecurityViolationError
 from xui_standby_sync.locks import LockSet
 
@@ -59,9 +57,8 @@ class TestLockBasicFunctionality:
         
         with patch("os.open", side_effect=mock_open):
             lock = LockSet(sync_lock, store_lock)
-            with pytest.raises(LockBusyError):
-                with lock:
-                    pass
+            with pytest.raises(LockBusyError), lock:
+                pass
             
             # Context manager should release self lock on exception
             # Sync lock should be cleaned up
@@ -73,9 +70,8 @@ class TestLockBasicFunctionality:
         
         lock = LockSet(sync_lock, store_lock)
         
-        with pytest.raises(RuntimeError):
-            with lock:
-                raise RuntimeError("Test exception")
+        with pytest.raises(RuntimeError), lock:
+            raise RuntimeError("Test exception")
         
         # Locks should be released even after exception
         # (implementation-specific cleanup verification)
@@ -206,9 +202,8 @@ class TestStoreLockRetryBehavior:
             lock = LockSet(sync_lock, store_lock, retries=5, retry_interval=1.0)
             
             # Should raise LockBusyError after exhausting retries
-            with pytest.raises(LockBusyError):
-                with lock:
-                    pass
+            with pytest.raises(LockBusyError), lock:
+                pass
             
             # The implementation should ensure clean exit code
             # (verification through the exception handling)
@@ -238,9 +233,8 @@ class TestLockCleanup:
         with patch("os.open", side_effect=mock_open):
             lock = LockSet(sync_lock, store_lock, retries=1)
             
-            with pytest.raises(LockBusyError):
-                with lock:
-                    pass
+            with pytest.raises(LockBusyError), lock:
+                pass
         
         # Cleanup should have been called for sync lock
         assert "sync" in cleanup_verified

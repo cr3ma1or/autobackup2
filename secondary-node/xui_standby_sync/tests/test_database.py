@@ -6,7 +6,6 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -17,8 +16,8 @@ from xui_standby_sync.database import (
     get_table_columns,
     validate_allowlist,
     validate_schema,
-    verify_invariants,
     verify_integrity,
+    verify_invariants,
 )
 from xui_standby_sync.exceptions import IntegrityCheckError, SchemaValidationError
 

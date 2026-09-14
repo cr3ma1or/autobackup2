@@ -8,10 +8,8 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from xui_standby_sync.exceptions import SyncError
-from xui_standby_sync.models import BackupMetadata, RuntimeConfig, PathsConfig
+from xui_standby_sync.models import BackupMetadata, PathsConfig, RuntimeConfig
 from xui_standby_sync.workflow import run_sync
 
 

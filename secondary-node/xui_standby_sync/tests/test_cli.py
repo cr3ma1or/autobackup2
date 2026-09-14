@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from xui_standby_sync.cli import main, legacy_main
+from xui_standby_sync.cli import legacy_main, main
 
 
 def _make_db(path: Path) -> None:
@@ -282,7 +282,7 @@ class TestCliSyncCommand:
                 mock_config.return_value = config
 
                 with patch("xui_standby_sync.cli.run_sync") as mock_sync:
-                    from xui_standby_sync.models import ExecutionResult, SyncRunPlan
+                    from xui_standby_sync.models import ExecutionResult
                     mock_sync.return_value = ExecutionResult(
                         success=True,
                         run_id="preview",

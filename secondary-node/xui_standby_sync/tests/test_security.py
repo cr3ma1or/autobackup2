@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 import pytest
 
-from xui_standby_sync.constants import SAFE_WORK_ROOT
 from xui_standby_sync.exceptions import SecurityViolationError
 from xui_standby_sync.security import (
     best_effort_wipe_file,
@@ -17,7 +16,6 @@ from xui_standby_sync.security import (
     validate_backup_file,
     validate_path_inside,
     verify_directory_chain,
-    verify_directory_security,
     verify_file_security,
 )
 

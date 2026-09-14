@@ -12,7 +12,10 @@ import pytest
 
 from xui_standby_sync.exceptions import RollbackError
 from xui_standby_sync.models import BackupMetadata
-from xui_standby_sync.rollback import create_rollback_snapshot, restore_rollback_snapshot
+from xui_standby_sync.rollback import (
+    create_rollback_snapshot,
+    restore_rollback_snapshot,
+)
 
 
 def _make_db(path: Path) -> None:

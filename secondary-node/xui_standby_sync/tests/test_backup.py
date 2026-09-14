@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import os
-import tempfile
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -19,7 +18,10 @@ from xui_standby_sync.backup import (
     verify_checksum,
     verify_freshness,
 )
-from xui_standby_sync.constants import INCOMING_DIR, DEFAULT_MAX_AGE_SECONDS, DEFAULT_MAX_CLOCK_SKEW_SECONDS
+from xui_standby_sync.constants import (
+    DEFAULT_MAX_AGE_SECONDS,
+    DEFAULT_MAX_CLOCK_SKEW_SECONDS,
+)
 from xui_standby_sync.exceptions import BackupValidationError, SecurityViolationError
 
 

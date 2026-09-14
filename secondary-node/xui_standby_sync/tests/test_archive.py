@@ -7,20 +7,21 @@ import io
 import json
 import os
 import tarfile
-import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from xui_standby_sync.archive import (
-    decrypt_and_extract,
     _extract_archive,
-    _extract_worker,
     _parse_gpg_status,
+    decrypt_and_extract,
 )
 from xui_standby_sync.commands import CommandError
-from xui_standby_sync.exceptions import ArchiveValidationError, SignatureVerificationError
+from xui_standby_sync.exceptions import (
+    ArchiveValidationError,
+    SignatureVerificationError,
+)
 from xui_standby_sync.models import SecurityConfig
 
 
