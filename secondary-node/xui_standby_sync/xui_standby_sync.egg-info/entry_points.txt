@@ -1,3 +1,0 @@
-[console_scripts]
-xui-standby = xui_standby_sync.cli:main
-xui-standby-sync = xui_standby_sync.cli:legacy_main
