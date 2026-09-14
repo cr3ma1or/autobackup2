@@ -189,7 +189,14 @@ def build_database_sync_plan(
                 creates.append(
                     InboundCreateOperation(
                         int(source_row["id"]),
-                        _mapping(_stream_settings(source_row, primary_ip, standby_ip, inbounds_allowed)),
+                        _mapping(
+                            _stream_settings(
+                                source_row,
+                                primary_ip,
+                                standby_ip,
+                                inbounds_allowed,
+                            )
+                        ),
                     )
                 )
 

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 from .commands import run_command
 from .constants import SERVICE_NAME
 from .database import verify_integrity
+from .exceptions import SyncError
 from .models import PathsConfig
 from .security import verify_file_security
 
@@ -25,9 +27,7 @@ def _lock_busy(path: Path) -> bool:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
             fcntl.flock(handle, fcntl.LOCK_UN)  # type: ignore[attr-defined]
             return False
-    except BlockingIOError:
-        return True
-    except OSError:
+    except (BlockingIOError, OSError):
         return True
 
 
@@ -41,13 +41,15 @@ def collect_status(
             verify_file_security(paths.standby_mode_file, "standby marker")
             mode = paths.standby_mode_file.read_text(encoding="utf-8").strip()
             marker_secure = True
-        except Exception:
+        except (OSError, UnicodeDecodeError):
             marker_secure = False
+
     try:
         verify_integrity(paths.target_db)
         target_integrity = "ok"
-    except Exception:
+    except (sqlite3.Error, OSError, SyncError):
         target_integrity = "failed"
+
     service_result = run_command(
         ["systemctl", "is-active", "--quiet", service_name],
         timeout=5,
