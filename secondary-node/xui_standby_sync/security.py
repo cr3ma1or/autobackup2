@@ -166,7 +166,7 @@ def best_effort_wipe_file(path: Path, *, timeout: int = 15) -> None:
 
 def safe_clean_work_dir(work_dir: Path, *, safe_root: Path = SAFE_WORK_ROOT) -> None:
     """Remove only a strict descendant of the protected work root."""
-    resolved = validate_path_inside(work_dir, safe_root, "work directory")
+    resolved = work_dir.resolve()
     if resolved in {
         Path("/"),
         Path("/opt"),
@@ -176,6 +176,7 @@ def safe_clean_work_dir(work_dir: Path, *, safe_root: Path = SAFE_WORK_ROOT) -> 
         safe_root.resolve(),
     }:
         raise SecurityViolationError(f"Refusing to remove critical path: {resolved}")
+    resolved = validate_path_inside(work_dir, safe_root, "work directory")
     if work_dir.is_symlink():
         raise SecurityViolationError(
             f"Work directory must not be a symlink: {work_dir}"

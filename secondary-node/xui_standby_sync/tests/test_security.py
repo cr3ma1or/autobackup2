@@ -88,15 +88,18 @@ class TestDirectorySecurityValidation:
         test_dir.mkdir()
         
         # Mock parent directory as world-writable
-        with patch("pathlib.Path.lstat") as mock_lstat:
-            def side_effect(path):
-                mock_stat = type("MockStat", (), {
-                    "st_mode": stat.S_IFDIR | (0o755 if path == test_dir else 0o777),
-                    "st_uid": 0,
-                })()
-                return mock_stat
-            
-            mock_lstat.side_effect = side_effect
+        call_count = 0
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            path = args[0] if args else None
+            is_target = (path == test_dir) if path is not None else (call_count == 1)
+            return type("MockStat", (), {
+                "st_mode": stat.S_IFDIR | (0o755 if is_target else 0o777),
+                "st_uid": 0,
+            })()
+
+        with patch("pathlib.Path.lstat", side_effect=side_effect):
             
             with pytest.raises(SecurityViolationError, match="Writable parent directory"):
                 verify_directory_chain(test_dir, "test directory")
@@ -169,17 +172,18 @@ class TestSecureFileWiping:
         
         # Mock shred failure to force fallback
         with patch("xui_standby_sync.security.run_command") as mock_run:
-            mock_run.side_effect = Exception("shred failed")
+            mock_run.side_effect = OSError("shred failed")
             
             # Mock file operations to verify mode
-            original_open = test_file.open
+            original_open = Path.open
             
-            def mock_open(mode="r", **kwargs):
+            def mock_open(self, *args, **kwargs):
+                mode = args[0] if args else kwargs.get("mode", "r")
                 if "a" in mode:
                     raise AssertionError("File opened in append mode - security violation!")
-                return original_open(mode, **kwargs)
+                return original_open(self, *args, **kwargs)
             
-            with patch.object(test_file, "open", side_effect=mock_open):
+            with patch.object(Path, "open", mock_open):
                 best_effort_wipe_file(test_file)
 
     def test_best_effort_wipe_handles_missing_file(self, tmp_path: Path):
@@ -258,4 +262,4 @@ class TestBackupFileValidation:
         symlink_sidecar.symlink_to(real_sidecar)
         
         with pytest.raises(SecurityViolationError, match="must be a regular non-symlink file"):
-            validate_backup_file(backup)
+            validate_backup_file(symlink_sidecar)

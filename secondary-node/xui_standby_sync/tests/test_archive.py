@@ -7,6 +7,7 @@ import io
 import json
 import os
 import tarfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -123,7 +124,7 @@ class TestTarExtraction:
         with tarfile.open(payload_path, "w:gz") as tar:
             for name in ["x-ui.db", "extra.txt"]:
                 info = tarfile.TarInfo(name=name)
-                info.size = 5
+                info.size = len(b"test")
                 tar.addfile(info, __import__("io").BytesIO(b"test"))
         
         with pytest.raises(ArchiveValidationError, match="Unexpected archive member"):
@@ -215,7 +216,7 @@ class TestTarExtraction:
         
         with tarfile.open(payload_path, "w:gz") as tar:
             info = tarfile.TarInfo(name="/etc/passwd")
-            info.size = 5
+            info.size = len(b"test")
             info.type = tarfile.REGTYPE
             tar.addfile(info, __import__("io").BytesIO(b"test"))
         
@@ -231,7 +232,7 @@ class TestTarExtraction:
         
         with tarfile.open(payload_path, "w:gz") as tar:
             info = tarfile.TarInfo(name="../../../etc/passwd")
-            info.size = 5
+            info.size = len(b"test")
             info.type = tarfile.REGTYPE
             tar.addfile(info, __import__("io").BytesIO(b"test"))
         
@@ -242,17 +243,18 @@ class TestTarExtraction:
         """Oversized declared member fails."""
         work_dir = tmp_path / "work"
         work_dir.mkdir()
-        
+
         payload_path = tmp_path / "payload.tar.gz"
-        small_content = b"small"
-        
+        content = b"x" * 1024
+
         with tarfile.open(payload_path, "w:gz") as tar:
             info = tarfile.TarInfo(name="x-ui.db")
-            info.size = 10 * 1024 * 1024 * 1024  # 10GB declared, but small actual
-            tar.addfile(info, __import__("io").BytesIO(small_content))
-        
+            info.size = len(content)
+            info.type = tarfile.REGTYPE
+            tar.addfile(info, io.BytesIO(content))
+
         with pytest.raises(ArchiveValidationError, match="size is outside"):
-            _extract_archive(str(payload_path), str(work_dir), 500 * 1024 * 1024, 30)
+            _extract_archive(str(payload_path), str(work_dir), max_size=500, timeout=30)
 
     def test_member_size_zero_fails(self, tmp_path: Path):
         """Member with zero size fails."""
@@ -358,22 +360,23 @@ class TestArchiveTimeout:
 
     def test_archive_worker_timeout_terminates_worker(self, tmp_path: Path):
         """Archive worker timeout terminates worker and returns controlled error."""
+        import time
         work_dir = tmp_path / "work"
         work_dir.mkdir()
-        
+
         payload_path = tmp_path / "large_payload.tar.gz"
-        # Create a very large tar that will take time to extract
-        large_content = b"\x00" * (50 * 1024 * 1024)  # 50MB
-        
+        content = b"x" * 1024
+
         with tarfile.open(payload_path, "w:gz") as tar:
             info = tarfile.TarInfo(name="x-ui.db")
-            info.size = len(large_content)
+            info.size = len(content)
             info.type = tarfile.REGTYPE
-            tar.addfile(info, __import__("io").BytesIO(large_content))
-        
+            tar.addfile(info, __import__("io").BytesIO(content))
+
         # Use very short timeout to trigger timeout
-        with pytest.raises(ArchiveValidationError, match="timed out"):
-            _extract_archive(str(payload_path), str(work_dir), 500 * 1024 * 1024, timeout=1)
+        with patch("xui_standby_sync.archive.shutil.copyfileobj", side_effect=lambda *a, **k: time.sleep(2)):
+            with pytest.raises(ArchiveValidationError, match="timed out"):
+                _extract_archive(str(payload_path), str(work_dir), 500 * 1024 * 1024, timeout=1)
 
     def test_worker_crash_no_queue_result_returns_controlled_error(self, tmp_path: Path):
         """Worker crash/no queue result returns controlled error."""
