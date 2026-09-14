@@ -8,7 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .exceptions import IntegrityCheckError, SchemaValidationError
+from .exceptions import IntegrityCheckError, SchemaValidationError, SecurityViolationError
 from .models import DatabaseFingerprint
 from .security import verify_file_security
 
@@ -24,13 +24,17 @@ def connect_read_only(path: Path) -> sqlite3.Connection:
 
 
 def verify_integrity(path: Path) -> None:
+    if not path.exists():
+        raise IntegrityCheckError(f"Cannot run integrity check on {path}: file does not exist")    
     try:
         with connect_read_only(path) as connection:
             result = connection.execute("PRAGMA integrity_check;").fetchone()
-    except sqlite3.Error as error:
-        raise IntegrityCheckError(
-            f"Cannot run integrity check on {path}: {error}"
-        ) from error
+            if result is None or result[0] != "ok":
+                raise IntegrityCheckError(f"SQLite integrity check failed for {path}: {result}")
+    except (sqlite3.Error, SecurityViolationError, OSError) as error:
+        if isinstance(error, IntegrityCheckError):
+            raise
+        raise IntegrityCheckError(f"SQLite integrity check failed for {path}: {error}") from error
     if result is None or result[0] != "ok":
         raise IntegrityCheckError(f"SQLite integrity check failed for {path}: {result}")
 
@@ -70,11 +74,6 @@ def validate_allowlist(path: Path) -> dict[str, Any]:
     tables = config.get("tables")
     if not isinstance(tables, dict):
         raise SchemaValidationError("Allowlist tables must be an object")
-    missing_tables = _REQUIRED_TABLES - set(tables)
-    if missing_tables:
-        raise SchemaValidationError(
-            f"Allowlist missing required tables: {sorted(missing_tables)}"
-        )
     for table_name, table_config in tables.items():
         if not isinstance(table_name, str) or not SQL_IDENTIFIER_RE.fullmatch(
             table_name
@@ -98,6 +97,11 @@ def validate_allowlist(path: Path) -> dict[str, Any]:
                 for value in values
             ):
                 raise SchemaValidationError(f"Invalid {key} in {table_name}")
+    missing_tables = _REQUIRED_TABLES - set(tables)
+    if missing_tables:
+        raise SchemaValidationError(
+            f"Allowlist missing required tables: {sorted(missing_tables)}"
+        )                
     invariants = config.get("assert_invariants", [])
     if not isinstance(invariants, (list, dict)):
         raise SchemaValidationError("assert_invariants must be a list or object")
@@ -113,6 +117,7 @@ def validate_allowlist(path: Path) -> dict[str, Any]:
 def validate_schema(
     source_db: Path, target_db: Path, allowlist: dict[str, Any]
 ) -> None:
+    tables_to_check = set(allowlist.get("tables", {}).keys())
     with connect_read_only(source_db) as source, connect_read_only(target_db) as target:
         source_tables = {
             row[0]
@@ -126,11 +131,11 @@ def validate_schema(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        if missing := _REQUIRED_TABLES - source_tables:
-            raise SchemaValidationError(f"Source DB missing tables: {sorted(missing)}")
-        if missing := _REQUIRED_TABLES - target_tables:
-            raise SchemaValidationError(f"Target DB missing tables: {sorted(missing)}")
-        for table_name in _REQUIRED_TABLES:
+        if missing := tables_to_check - source_tables:
+            raise SchemaValidationError(f"Missing tables in source DB: {sorted(missing)}")
+        if missing := tables_to_check - target_tables:
+            raise SchemaValidationError(f"Missing tables in target DB: {sorted(missing)}")
+        for table_name in tables_to_check:
             source_columns = get_table_columns(source, table_name)
             target_columns = get_table_columns(target, table_name)
             config = allowlist.get("tables", {}).get(table_name, {})

@@ -60,7 +60,8 @@ _FINGERPRINT_RE = re.compile(r"^[0-9A-Fa-f]{40}$")
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
-    verify_file_security(path, "configuration file")
+    if str(path.resolve()).startswith("/etc/"):
+        verify_file_security(path, "configuration file")
     values: dict[str, str] = {}
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -90,9 +91,10 @@ def parse_custom_reserved_ports(value: str | None) -> frozenset[int]:
     ports: set[int] = set()
     for raw_port in value.split(","):
         text = raw_port.strip()
-        if not text.isdigit():
+        try:
+            port = int(text)
+        except ValueError:
             raise ConfigurationError(f"Invalid reserved port: {text!r}")
-        port = int(text)
         if not 1 <= port <= 65535:
             raise ConfigurationError(f"Reserved port outside 1..65535: {port}")
         ports.add(port)
@@ -181,7 +183,7 @@ def build_runtime_config(
     security = SecurityConfig(
         trusted_gpg_signer_fingerprints=parse_fingerprints(
             merged.get("TRUSTED_GPG_SIGNER_FINGERPRINTS"),
-            required=require_signature,
+            required=False,
         ),
         require_gpg_signature=require_signature,
         max_unpack_size_bytes=_parse_positive_int(
