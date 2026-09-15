@@ -48,6 +48,7 @@ _ALLOWED_ENV_KEYS = {
     "TRUSTED_GPG_SIGNER_FINGERPRINTS",
     "REQUIRE_GPG_SIGNATURE",
     "CMD_TIMEOUT",
+    "MAX_AGE_DAYS",
     "MAX_AGE_SECONDS",
     "MAX_CLOCK_SKEW_SECONDS",
     "MAX_UNPACK_SIZE_BYTES",
@@ -60,7 +61,11 @@ _FINGERPRINT_RE = re.compile(r"^[0-9A-Fa-f]{40}$")
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
-    if str(path.resolve()).startswith("/etc/"):
+    try:
+        path.resolve().relative_to(Path("/etc"))
+    except ValueError:
+        pass
+    else:
         verify_file_security(path, "configuration file")
     values: dict[str, str] = {}
     try:
@@ -79,13 +84,19 @@ def _parse_env_file(path: Path) -> dict[str, str]:
         key, value = match.groups()
         if key in _ALLOWED_ENV_KEYS:
             value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            if value[:1] in {"'", '"'}:
+                if len(value) < 2 or value[-1] != value[0]:
+                    raise ConfigurationError(f"Unbalanced quotes for {key}")
                 value = value[1:-1]
+            elif value[-1:] in {"'", '"'}:
+                raise ConfigurationError(f"Unbalanced quotes for {key}")
             values[key] = value
     return values
 
 
 def parse_custom_reserved_ports(value: str | None) -> frozenset[int]:
+    if value is not None and not isinstance(value, str):
+        raise ConfigurationError("CUSTOM_RESERVED_PORTS must be a string")
     if value is None or not value.strip():
         return frozenset()
     ports: set[int] = set()
@@ -93,8 +104,10 @@ def parse_custom_reserved_ports(value: str | None) -> frozenset[int]:
         text = raw_port.strip()
         try:
             port = int(text)
-        except ValueError:
-            raise ConfigurationError(f"Invalid reserved port: {text!r}")
+        except ValueError as error:
+            raise ConfigurationError(
+                f"Invalid reserved port: {text!r}"
+            ) from error
         if not 1 <= port <= 65535:
             raise ConfigurationError(f"Reserved port outside 1..65535: {port}")
         ports.add(port)
@@ -102,6 +115,10 @@ def parse_custom_reserved_ports(value: str | None) -> frozenset[int]:
 
 
 def parse_fingerprints(value: str | None, *, required: bool) -> frozenset[str]:
+    if value is not None and not isinstance(value, str):
+        raise ConfigurationError("TRUSTED_GPG_SIGNER_FINGERPRINTS must be a string")
+    if not isinstance(required, bool):
+        raise ConfigurationError("required must be a boolean")
     if value is None or not value.strip():
         if required:
             raise ConfigurationError("Trusted GPG signer fingerprints are required")
@@ -119,6 +136,10 @@ def parse_fingerprints(value: str | None, *, required: bool) -> frozenset[str]:
 
 
 def _parse_bool(value: str | None, default: bool = False) -> bool:
+    if value is not None and not isinstance(value, str):
+        raise ConfigurationError("Boolean configuration values must be strings")
+    if not isinstance(default, bool):
+        raise ConfigurationError("Boolean default must be a boolean")
     if value is None:
         return default
     normalized = value.strip().lower()
@@ -130,6 +151,10 @@ def _parse_bool(value: str | None, default: bool = False) -> bool:
 
 
 def _parse_positive_int(name: str, value: str | None, default: int) -> int:
+    if not isinstance(name, str) or not isinstance(default, int):
+        raise ConfigurationError("Invalid integer parser arguments")
+    if value is not None and not isinstance(value, str):
+        raise ConfigurationError(f"{name} must be a string")
     if value is None or not value.strip():
         return default
     try:
@@ -163,9 +188,26 @@ def build_runtime_config(
     unsafe_backup_path: bool = False,
     cli_overrides: Mapping[str, str] | None = None,
 ) -> RuntimeConfig:
+    if not isinstance(values, Mapping):
+        raise ConfigurationError("Configuration values must be a mapping")
+    if cli_overrides is not None and not isinstance(cli_overrides, Mapping):
+        raise ConfigurationError("CLI overrides must be a mapping")
     merged = dict(values)
     if cli_overrides:
         merged.update(cli_overrides)
+    if any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in merged.items()
+    ):
+        raise ConfigurationError("Configuration keys and values must be strings")
+    if "MAX_AGE_DAYS" in merged and "MAX_AGE_SECONDS" in merged:
+        raise ConfigurationError(
+            "Set only one retention key: MAX_AGE_DAYS or MAX_AGE_SECONDS"
+        )
+    if "MAX_AGE_DAYS" in merged:
+        merged["MAX_AGE_SECONDS"] = str(
+            _parse_positive_int("MAX_AGE_DAYS", merged["MAX_AGE_DAYS"], 1) * 86400
+        )
     require_signature = _parse_bool(merged.get("REQUIRE_GPG_SIGNATURE"), True)
     paths = PathsConfig(
         target_db=TARGET_DB_PATH,

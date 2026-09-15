@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import pwd
 import stat
 import time
 from pathlib import Path
@@ -51,19 +52,33 @@ class LockSet:
                 "fcntl is required on the target platform"
             )
 
-        if path.is_symlink():
-            raise SecurityViolationError(f"Unsafe lock file: {path}")
-
+        if not hasattr(os, "O_NOFOLLOW"):
+            raise SecurityViolationError("O_NOFOLLOW is required for lock files")
         verify_directory_chain(path.parent, f"lock {path}", allow_user_owned=True)
         flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
+        flags |= os.O_NOFOLLOW
         try:
             descriptor = os.open(path, flags, FILE_MODE)
             if isinstance(descriptor, int):
                 handle = os.fdopen(descriptor, "a+")
                 try:
                     path_stat = os.fstat(descriptor)
-                    if not stat.S_ISREG(path_stat.st_mode) or (path_stat.st_mode & 0o077):
+                    expected_uid = 0
+                    expected_gid = 0
+                    if path == self.store_lock_path:
+                        try:
+                            xbackup = pwd.getpwnam("xbackup")
+                        except KeyError as error:
+                            raise SecurityViolationError(
+                                "xbackup account is required for store lock"
+                            ) from error
+                        expected_uid, expected_gid = xbackup.pw_uid, xbackup.pw_gid
+                    if (
+                        not stat.S_ISREG(path_stat.st_mode)
+                        or stat.S_IMODE(path_stat.st_mode) != FILE_MODE
+                        or path_stat.st_uid != expected_uid
+                        or path_stat.st_gid != expected_gid
+                    ):
                         handle.close()
                         raise SecurityViolationError(f"Unsafe lock file: {path}")
                 except OSError as err:
@@ -74,13 +89,19 @@ class LockSet:
 
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as error:
-                if hasattr(handle, "close"):
-                    with contextlib.suppress(Exception):
-                        handle.close()
-                raise LockBusyError(f"Lock is busy: {path}") from error
-            except (TypeError, OSError):
-                pass
+            except OSError as error:
+                if error.errno in {errno.EWOULDBLOCK, errno.EAGAIN}:
+                    handle.close()
+                    raise LockBusyError(f"Lock is busy: {path}") from error
+                handle.close()
+                raise SecurityViolationError(
+                    f"Cannot acquire lock {path}: {error}"
+                ) from error
+            except TypeError as error:
+                handle.close()
+                raise SecurityViolationError(
+                    f"Cannot acquire lock {path}: {error}"
+                ) from error
             return handle
         except (LockBusyError, SecurityViolationError):
             raise

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
+from .database import SQL_IDENTIFIER_RE
 from .exceptions import OperationCancelledError, PlanExecutionError, PlanValidationError
 from .models import DatabaseFingerprint, DatabaseSyncPlan
+
+_HOST_INVARIANTS = {"webPort", "subPort", "subURI", "tgBotEnable"}
 
 
 def _ensure_not_cancelled(is_cancelled: Callable[[], bool] | None) -> None:
@@ -16,7 +20,44 @@ def _ensure_not_cancelled(is_cancelled: Callable[[], bool] | None) -> None:
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    if not SQL_IDENTIFIER_RE.fullmatch(table):
+        raise PlanExecutionError(f"Invalid table identifier: {table!r}")
     return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table});")}
+
+
+def _host_invariant_snapshot(connection: sqlite3.Connection) -> dict[str, str]:
+    rows = connection.execute("SELECT key, value FROM settings;").fetchall()
+    return {str(row["key"]): str(row["value"]) for row in rows if row["key"] in _HOST_INVARIANTS or str(row["key"]).endswith(("CertFile", "KeyFile"))}
+
+
+def _assert_inbound_one_protected(inbound_id: int) -> None:
+    if inbound_id == 1:
+        raise PlanExecutionError("Inbound 1 must not be deleted or overwritten")
+
+
+def _assert_dual_layer(connection: sqlite3.Connection, inbound_ids: set[int]) -> None:
+    for inbound_id in inbound_ids:
+        row = connection.execute("SELECT settings FROM inbounds WHERE id = ?;", (inbound_id,)).fetchone()
+        if row is None:
+            raise PlanExecutionError(f"Inbound {inbound_id} disappeared during merge")
+        try:
+            clients_json = json.loads(row["settings"] or "{}")
+        except (TypeError, json.JSONDecodeError) as error:
+            raise PlanExecutionError(f"Inbound {inbound_id} has malformed settings JSON") from error
+        clients = clients_json.get("clients") if isinstance(clients_json, dict) else None
+        if not isinstance(clients, list):
+            raise PlanExecutionError(f"Inbound {inbound_id} settings lacks clients array")
+        relational = connection.execute("SELECT uuid, email FROM clients WHERE inbound_id = ?;", (inbound_id,)).fetchall()
+        if len(clients) != len(relational):
+            raise PlanExecutionError(f"Inbound {inbound_id} clients JSON is inconsistent with relational clients")
+        identities = {(str(row["uuid"]), str(row["email"])) for row in relational}
+        for client in clients:
+            if not isinstance(client, dict):
+                raise PlanExecutionError(f"Inbound {inbound_id} clients JSON contains non-object")
+            if "uuid" in client and not any(str(client["uuid"]) == uuid for uuid, _ in identities):
+                raise PlanExecutionError(f"Inbound {inbound_id} clients JSON references unknown UUID")
+            if "email" in client and not any(str(client["email"]) == email for _, email in identities):
+                raise PlanExecutionError(f"Inbound {inbound_id} clients JSON references unknown email")
 
 
 def apply_database_sync_plan(
@@ -28,12 +69,14 @@ def apply_database_sync_plan(
     """Apply an already-built plan; no matching or planning decisions occur here."""
     if not plan.is_valid:
         raise PlanValidationError("Cannot apply invalid database plan")
-    # CRITICAL FIX D4: Use default isolation_level for proper transaction management
-    # isolation_level=None causes autocommit mode, breaking ROLLBACK semantics
     connection = sqlite3.connect(target_db, isolation_level=None)
     connection.row_factory = sqlite3.Row
     try:
+        connection.execute("PRAGMA foreign_keys = ON;")
+        connection.execute("PRAGMA busy_timeout = 5000;")
         connection.execute("BEGIN IMMEDIATE;")
+        invariant_baseline = _host_invariant_snapshot(connection)
+        touched_inbounds = {operation.target_inbound_id for operation in plan.inbound_client_updates}
         if _current_fingerprint(connection) != plan.target_fingerprint:
             raise PlanExecutionError(
                 "Target database fingerprint changed since planning"
@@ -63,6 +106,7 @@ def apply_database_sync_plan(
             _ensure_not_cancelled(is_cancelled)
 
         for inbound_settings_op in plan.inbound_client_updates:
+            # Only the clients array may be updated for protected inbound 1.
             cursor = connection.execute(
                 "UPDATE inbounds SET settings = ? WHERE id = ?;",
                 (
@@ -105,7 +149,9 @@ def apply_database_sync_plan(
             _ensure_not_cancelled(is_cancelled)
 
         for client_id in plan.client_deletes:
-            connection.execute("DELETE FROM clients WHERE id = ?;", (client_id,))
+            cursor = connection.execute("DELETE FROM clients WHERE id = ?;", (client_id,))
+            if cursor.rowcount == 0:
+                raise PlanExecutionError(f"Target client {client_id} not found")
             _ensure_not_cancelled(is_cancelled)
 
         traffic_columns = _columns(connection, "client_traffics")
@@ -137,48 +183,55 @@ def apply_database_sync_plan(
             _ensure_not_cancelled(is_cancelled)
 
         for traffic_id in plan.traffic_deletes:
-            connection.execute(
-                "DELETE FROM client_traffics WHERE id = ?;", (traffic_id,)
-            )
+            cursor = connection.execute("DELETE FROM client_traffics WHERE id = ?;", (traffic_id,))
+            if cursor.rowcount == 0:
+                raise PlanExecutionError(f"Target client traffic {traffic_id} not found")
             _ensure_not_cancelled(is_cancelled)
 
         for inbound_delete_op in plan.inbound_deletes:
-            connection.execute(
-                "DELETE FROM clients WHERE inbound_id = ?;",
-                (inbound_delete_op.target_inbound_id,),
-            )
-            connection.execute(
-                "DELETE FROM client_traffics WHERE inbound_id = ?;",
-                (inbound_delete_op.target_inbound_id,),
-            )
-            connection.execute(
-                "DELETE FROM inbounds WHERE id = ?;",
-                (inbound_delete_op.target_inbound_id,),
-            )
+            _assert_inbound_one_protected(inbound_delete_op.target_inbound_id)
+            connection.execute("DELETE FROM clients WHERE inbound_id = ?;", (inbound_delete_op.target_inbound_id,))
+            connection.execute("DELETE FROM client_traffics WHERE inbound_id = ?;", (inbound_delete_op.target_inbound_id,))
+            cursor = connection.execute("DELETE FROM inbounds WHERE id = ?;", (inbound_delete_op.target_inbound_id,))
+            if cursor.rowcount == 0:
+                raise PlanExecutionError(f"Target inbound {inbound_delete_op.target_inbound_id} not found")
             _ensure_not_cancelled(is_cancelled)
 
         for setting_op in plan.settings_updates:
             if setting_op.target_setting_id is None:
-                connection.execute(
-                    "INSERT INTO settings (key, value) VALUES (?, ?);",
-                    (setting_op.key, setting_op.value),
-                )
+                connection.execute("INSERT INTO settings (key, value) VALUES (?, ?);", (setting_op.key, setting_op.value))
             else:
-                connection.execute(
-                    "UPDATE settings SET value = ? WHERE id = ?;",
-                    (setting_op.value, setting_op.target_setting_id),
-                )
+                cursor = connection.execute("UPDATE settings SET value = ? WHERE id = ?;", (setting_op.value, setting_op.target_setting_id))
+                if cursor.rowcount == 0:
+                    raise PlanExecutionError(f"Target setting {setting_op.target_setting_id} not found")
             _ensure_not_cancelled(is_cancelled)
 
         if plan.xray_template_json is not None:
-            connection.execute(
-                "UPDATE settings SET value = ? WHERE key = 'xrayTemplateConfig';",
-                (plan.xray_template_json,),
+            cursor = connection.execute("UPDATE settings SET value = ? WHERE key = 'xrayTemplateConfig';", (plan.xray_template_json,))
+            if cursor.rowcount == 0:
+                raise PlanExecutionError("xrayTemplateConfig setting not found")
+        _assert_dual_layer(connection, touched_inbounds)
+        permitted_setting_ids = {
+            operation.target_setting_id for operation in plan.settings_updates
+            if operation.target_setting_id is not None
+        }
+        current_invariants = _host_invariant_snapshot(connection)
+        changed_invariants = {
+            key for key, value in current_invariants.items()
+            if invariant_baseline.get(key) != value
+        }
+        changed_setting_keys = {
+            str(row["key"])
+            for row in connection.execute(
+                "SELECT key FROM settings WHERE id IN ({})".format(",".join("?" for _ in permitted_setting_ids)),
+                tuple(permitted_setting_ids),
             )
-        connection.commit()
+        } if permitted_setting_ids else set()
+        if changed_invariants - changed_setting_keys:
+            raise PlanExecutionError("Host invariants changed during database merge")
+        connection.execute("COMMIT;")
     except BaseException:
-        # sqlite3 will automatically rollback on exception with default isolation_level
-        connection.rollback()
+        connection.execute("ROLLBACK;")
         raise
     finally:
         connection.close()

@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 from xui_standby_sync.exceptions import RollbackError
-from xui_standby_sync.exceptions import SecurityViolationError, IntegrityCheckError
 from xui_standby_sync.models import BackupMetadata
 from xui_standby_sync.rollback import (
     create_rollback_snapshot,
@@ -200,7 +199,7 @@ class TestRestoreRollbackSnapshot:
         _make_db(target)
         missing = tmp_path / "missing" / "snapshot.db"
 
-        with pytest.raises(SecurityViolationError):
+        with pytest.raises(RollbackError):
             restore_rollback_snapshot(target_db=target, snapshot_path=missing)
 
     def test_restore_corrupted_snapshot_raises_rollback_error(self, tmp_path: Path):
@@ -218,7 +217,7 @@ class TestRestoreRollbackSnapshot:
         # Corrupt the snapshot
         meta.snapshot_path.write_bytes(b"corrupted not a db")
 
-        with pytest.raises(IntegrityCheckError):
+        with pytest.raises(RollbackError):
             restore_rollback_snapshot(target_db=target, snapshot_path=meta.snapshot_path)
 
 

@@ -223,19 +223,24 @@ class TestLockCleanup:
             if "sync" in str(path):
                 # First open succeeds
                 return type("MockHandle", (), {
-                    "close": lambda: cleanup_verified.append("sync"),
-                    "fileno": lambda: 123,
+                    "close": lambda self: cleanup_verified.append("sync"),
+                    "fileno": lambda self: 123,
                 })()
             elif "store" in str(path):
                 # Store open fails
                 raise LockBusyError("Store lock busy")
             
-        with patch("os.open", side_effect=mock_open):
-            lock = LockSet(sync_lock, store_lock, retries=1)
-            
-            with pytest.raises(LockBusyError), lock:
-                pass
-        
+        with patch("xui_standby_sync.locks.os.open", side_effect=mock_open):
+            with patch("xui_standby_sync.locks.os.fstat") as mock_fstat:
+                mock_fstat.return_value = type(
+                    "Stat", (), {"st_mode": 0o100600, "st_uid": 0, "st_gid": 0}
+                )()
+                with patch("fcntl.flock"):
+                    lock = LockSet(sync_lock, store_lock, retries=1)
+
+                    with pytest.raises(LockBusyError), lock:
+                        pass
+
         # Cleanup should have been called for sync lock
         assert "sync" in cleanup_verified
 
@@ -248,16 +253,20 @@ class TestLockCleanup:
         
         def mock_handle():
             return type("MockHandle", (), {
-                "close": lambda: close_order.append("close"),
-                "fileno": lambda: 123,
+                "close": lambda self: close_order.append("close"),
+                "fileno": lambda self: 123,
             })()
         
-        with patch("os.open", return_value=123):
-            with patch("os.fdopen", return_value=mock_handle()):
-                lock = LockSet(sync_lock, store_lock)
-                with lock:
-                    pass
-        
+        with patch("xui_standby_sync.locks.os.open", return_value=123):
+            with patch("xui_standby_sync.locks.os.fdopen", return_value=mock_handle()):
+                with patch("xui_standby_sync.locks.os.fstat", return_value=type(
+                    "Stat", (), {"st_mode": 0o100600, "st_uid": 0, "st_gid": 0}
+                )()):
+                    with patch("fcntl.flock"):
+                        lock = LockSet(sync_lock, store_lock)
+                        with lock:
+                            pass
+
         # Cleanup order should be reverse of acquisition (LIFO)
         assert len(close_order) == 2
 
@@ -269,6 +278,6 @@ class TestLockCleanup:
         symlink_lock = tmp_path / "symlink.lock"
         symlink_lock.symlink_to(real_lock)
         
-        with pytest.raises(SecurityViolationError, match="Unsafe lock file"):
+        with pytest.raises(SecurityViolationError):
             with LockSet(symlink_lock, tmp_path / "store.lock"):
                 pass

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +19,23 @@ _REQUIRED_TABLES = {"inbounds", "clients", "client_traffics", "settings"}
 
 
 def connect_read_only(path: Path) -> sqlite3.Connection:
+    """Open the verified inode through its descriptor to close the TOCTOU window."""
     verify_file_security(path, "SQLite database")
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise SecurityViolationError(f"Cannot securely open SQLite database {path}: {error}") from error
+    try:
+        opened = os.fstat(descriptor)
+        named = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+            raise SecurityViolationError(f"SQLite database changed while opening: {path}")
+        connection = sqlite3.connect(f"file:/proc/self/fd/{descriptor}?mode=ro", uri=True)
+    except (OSError, sqlite3.Error):
+        os.close(descriptor)
+        raise
+    os.close(descriptor)
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -97,6 +114,12 @@ def validate_allowlist(path: Path) -> dict[str, Any]:
                 for value in values
             ):
                 raise SchemaValidationError(f"Invalid {key} in {table_name}")
+        if table_name in {"clients", "client_traffics"}:
+            matching_key = table_config.get("matching_key")
+            if not isinstance(matching_key, str) or not matching_key:
+                raise SchemaValidationError(f"Missing matching_key in {table_name}")
+        if table_name in {"clients", "client_traffics", "inbounds"} and not table_config.get("allowed_columns"):
+            raise SchemaValidationError(f"allowed_columns must not be empty in {table_name}")
     missing_tables = _REQUIRED_TABLES - set(tables)
     if missing_tables:
         raise SchemaValidationError(
@@ -150,14 +173,10 @@ def validate_schema(
                 }
             elif table_name == "client_traffics":
                 required |= {"inbound_id", "email", config.get("matching_key", "email")}
-            for label, columns in (
-                ("source", source_columns),
-                ("target", target_columns),
-            ):
-                if missing := required - columns:
-                    raise SchemaValidationError(
-                        f"{label} {table_name} missing columns: {sorted(missing)}"
-                    )
+            configured = set(config.get("allowed_columns", []))
+            for label, columns in (("source", source_columns), ("target", target_columns)):
+                if missing := (required | configured) - columns:
+                    raise SchemaValidationError(f"{label} {table_name} missing columns: {sorted(missing)}")
 
 
 def get_invariants_snapshot(path: Path, keys: list[str]) -> dict[str, str]:

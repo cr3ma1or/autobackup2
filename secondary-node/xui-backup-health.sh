@@ -27,6 +27,7 @@
 # ==============================================================================
 
 set -Eeuo pipefail
+umask 077
 
 # ------------------------------------------------------------------------------
 # Configuration & Constants
@@ -56,6 +57,15 @@ critical() {
   printf 'STATUS=CRITICAL version=%s %s\n' "$SCRIPT_VERSION" "$1"
   printf 'LAST_RECEIVER_LOG=%s\n' "$last_log"
   exit 2
+}
+
+warn() {
+  local last_log
+  last_log="$(get_last_receiver_log 2>/dev/null || printf 'NONE')"
+
+  printf 'STATUS=WARN version=%s %s\n' "$SCRIPT_VERSION" "$1"
+  printf 'LAST_RECEIVER_LOG=%s\n' "$last_log"
+  exit 1
 }
 
 # shellcheck disable=SC2317,SC2329,SC2339
@@ -179,10 +189,6 @@ main() {
 
   age_hours=$((age_seconds / 3600))
 
-  if ((age_seconds > MAX_BACKUP_AGE_HOURS * 3600)); then
-    critical "archive=$archive_base reason=age_exceeded age_hours=$age_hours age_seconds=$age_seconds max_age_hours=$MAX_BACKUP_AGE_HOURS"
-  fi
-
   # ------------------------------------------------------------------------------
   # Integrity & Checksum Verification
   # ------------------------------------------------------------------------------
@@ -198,6 +204,10 @@ main() {
 
   [[ "$archive_bytes" =~ ^[0-9]+$ ]] ||
     critical "archive=$archive_base reason=invalid_archive_size"
+
+  if ((age_seconds > MAX_BACKUP_AGE_HOURS * 3600)); then
+    warn "archive=$archive_base reason=stale age_hours=$age_hours age_seconds=$age_seconds max_age_hours=$MAX_BACKUP_AGE_HOURS checksum=OK"
+  fi
 
   # ------------------------------------------------------------------------------
   # Receiver Log Audit

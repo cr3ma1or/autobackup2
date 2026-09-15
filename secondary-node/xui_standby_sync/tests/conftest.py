@@ -4,11 +4,29 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import xui_standby_sync.locks as locks_module
+
+@pytest.fixture
+def tmp_path(monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Provide a root-owned, private temporary directory for security tests."""
+    monkeypatch.setattr(
+        locks_module.pwd,
+        "getpwnam",
+        lambda _name: type("Account", (), {"pw_uid": 0, "pw_gid": 0})(),
+    )
+    path = Path(tempfile.mkdtemp(prefix="xui-tests-", dir="/root"))
+    os.chmod(path, 0o700)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 from xui_standby_sync.models import (
     BackupMetadata,

@@ -14,6 +14,39 @@ from .database import (
     validate_schema,
 )
 from .exceptions import PlanValidationError
+
+_HOST_SETTING_DENYLIST = {"webPort", "subPort", "subURI", "tgBotEnable"}
+
+
+def _is_host_setting(key: str) -> bool:
+    return key in _HOST_SETTING_DENYLIST or key.endswith("CertFile") or key.endswith("KeyFile")
+
+
+def _validate_unique_client_keys(rows: list[sqlite3.Row], matching_key: str, fallback_key: str, label: str) -> None:
+    seen_matching: set[str] = set()
+    seen_fallback: set[str] = set()
+    for row in rows:
+        matching = row[matching_key]
+        fallback = row[fallback_key]
+        if matching:
+            if str(matching) in seen_matching:
+                raise PlanValidationError(f"Duplicate {matching_key} in {label}: {matching}")
+            seen_matching.add(str(matching))
+        if fallback:
+            if str(fallback) in seen_fallback:
+                raise PlanValidationError(f"Duplicate {fallback_key} in {label}: {fallback}")
+            seen_fallback.add(str(fallback))
+
+
+def _normalised_clients_settings(row: sqlite3.Row, clients: list[sqlite3.Row], label: str) -> str:
+    settings = _json_object(row["settings"], label)
+    if clients:
+        row_columns = set(clients[0].keys())
+        settings["clients"] = [
+            {key: client[key] for key in row_columns if key not in {"id", "inbound_id"}}
+            for client in clients
+        ]
+    return _settings_json(settings, label)
 from .models import (
     ClientInsertOperation,
     ClientUpdateOperation,
@@ -78,6 +111,11 @@ def build_database_sync_plan(
     validate_schema(source_db, target_db, allowlist)
     with connect_read_only(source_db) as source, connect_read_only(target_db) as target:
         fingerprint = get_database_fingerprint(target)
+        source_clients = source.execute("SELECT * FROM clients ORDER BY id;").fetchall()
+        target_clients = target.execute("SELECT * FROM clients ORDER BY id;").fetchall()
+        source_clients_by_inbound: dict[int, list[sqlite3.Row]] = {}
+        for client in source_clients:
+            source_clients_by_inbound.setdefault(int(client["inbound_id"]), []).append(client)
         source_primary = source.execute(
             "SELECT * FROM inbounds WHERE id = 1;"
         ).fetchone()
@@ -110,17 +148,12 @@ def build_database_sync_plan(
             inbounds_config.get("allowed_columns", [])
         ) | frozenset({"port", "tag", "settings", "stream_settings"})
 
-        source_primary_settings = _json_object(
-            source_primary["settings"], "source inbound 1 settings"
-        )
-        target_primary_settings = _json_object(
-            target_primary["settings"], "target inbound 1 settings"
-        )
-        source_clients_json = _settings_json(
-            source_primary_settings, "source inbound 1 settings"
+        source_clients_json = _normalised_clients_settings(
+            source_primary, source_clients_by_inbound.get(1, []), "source inbound 1 settings"
         )
         target_clients_json = _settings_json(
-            target_primary_settings, "target inbound 1 settings"
+            _json_object(target_primary["settings"], "target inbound 1 settings"),
+            "target inbound 1 settings",
         )
         if source_clients_json != target_clients_json:
             inbound_updates.append(
@@ -155,19 +188,13 @@ def build_database_sync_plan(
                     )
                 mapping[int(source_row["id"])] = int(target_row["id"])
                 matched_target_ids.add(int(target_row["id"]))
-                source_settings = _json_object(
-                    source_row["settings"],
-                    f"source inbound {source_row['id']} settings",
-                )
-                target_settings = _json_object(
-                    target_row["settings"],
-                    f"target inbound {target_row['id']} settings",
-                )
-                source_clients_json = _settings_json(
-                    source_settings, "source secondary inbound"
+                source_clients_json = _normalised_clients_settings(
+                    source_row, source_clients_by_inbound.get(int(source_row["id"]), []),
+                    "source secondary inbound",
                 )
                 target_clients_json = _settings_json(
-                    target_settings, "target secondary inbound"
+                    _json_object(target_row["settings"], f"target inbound {target_row['id']} settings"),
+                    "target secondary inbound",
                 )
                 if source_clients_json != target_clients_json:
                     inbound_updates.append(
@@ -186,19 +213,12 @@ def build_database_sync_plan(
                         f"Cannot import inbound {source_row['id']}: port "
                         f"{source_port} is occupied or reserved"
                     )
-                creates.append(
-                    InboundCreateOperation(
-                        int(source_row["id"]),
-                        _mapping(
-                            _stream_settings(
-                                source_row,
-                                primary_ip,
-                                standby_ip,
-                                inbounds_allowed,
-                            )
-                        ),
-                    )
+                create_values = _stream_settings(source_row, primary_ip, standby_ip, inbounds_allowed)
+                create_values["settings"] = _normalised_clients_settings(
+                    source_row, source_clients_by_inbound.get(int(source_row["id"]), []),
+                    f"source inbound {source_row['id']} settings",
                 )
+                creates.append(InboundCreateOperation(int(source_row["id"]), _mapping(create_values)))
 
         source_tags = {row["tag"] for row in source_secondary if row["tag"]}
         source_ports = {row["port"] for row in source_secondary}
@@ -221,8 +241,8 @@ def build_database_sync_plan(
         matching_key = client_config["matching_key"]
         fallback_key = client_config.get("fallback_matching_key", "email")
         client_columns = set(client_config["allowed_columns"])
-        source_clients = source.execute("SELECT * FROM clients;").fetchall()
-        target_clients = target.execute("SELECT * FROM clients;").fetchall()
+        _validate_unique_client_keys(source_clients, matching_key, fallback_key, "source clients")
+        _validate_unique_client_keys(target_clients, matching_key, fallback_key, "target clients")
         target_by_key = {
             (row[matching_key] if row[matching_key] else row[fallback_key]): row
             for row in target_clients
@@ -244,7 +264,7 @@ def build_database_sync_plan(
             values = {
                 column: row[column]
                 for column in client_columns
-                if column in row_columns
+                if column in row_columns and column != "id"
             }
             if (
                 row["inbound_id"] not in mapping
@@ -284,6 +304,10 @@ def build_database_sync_plan(
             )
         )
 
+        managed_target_count = sum(1 for row in target_clients if row["inbound_id"] in managed_target_ids)
+        if managed_target_count > 1 and len(client_deletes) * 2 > managed_target_count:
+            raise PlanValidationError("CRITICAL: mass client deletion exceeds 50% of Standby clients")
+
         traffic_config = allowlist["tables"]["client_traffics"]
         traffic_key = traffic_config["matching_key"]
         traffic_columns = set(traffic_config["allowed_columns"])
@@ -311,7 +335,7 @@ def build_database_sync_plan(
             values = {
                 column: row[column]
                 for column in traffic_columns
-                if column in row_columns
+                if column in row_columns and column != "id"
             }
             values["inbound_id"] = target_inbound_id or row["inbound_id"]
             if "email" in row_columns:
@@ -354,6 +378,8 @@ def build_database_sync_plan(
             for row in target.execute("SELECT id, key, value FROM settings;")
         }
         for key in allowed_settings:
+            if _is_host_setting(key):
+                continue
             if key in source_settings and (
                 key not in target_settings
                 or target_settings[key]["value"] != source_settings[key]["value"]

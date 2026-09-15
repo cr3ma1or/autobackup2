@@ -45,10 +45,8 @@ def _prune_old_snapshots(snapshots_dir: Path, max_copies: int) -> None:
         return
     while len(run_dirs) > max_copies:
         oldest = run_dirs.pop(0)
-        try:
+        with contextlib.suppress(OSError):
             shutil.rmtree(oldest)
-        except OSError:
-            pass
 
 
 def create_rollback_snapshot(
@@ -107,35 +105,63 @@ def create_rollback_snapshot(
 
 
 def restore_rollback_snapshot(*, target_db: Path, snapshot_path: Path) -> None:
-    """Restore database from snapshot with atomic swap to prevent race conditions.
-    
-    CRITICAL FIX D5: Race condition when concurrent SQLite processes write to WAL/SHM
-    files during restoration. Solution: perform atomic os.replace() BEFORE cleaning
-    side files, ensuring new transactions see the restored database immediately.
-    """
+    """Restore a verified snapshot after removing stale SQLite sidecars."""
+    temporary: Path | None = None
     try:
         verify_file_security(snapshot_path, "rollback snapshot")
-        
-        # Step 1: Copy snapshot to temporary location
-        temporary = Path(f"{target_db}.rollback.tmp")
-        shutil.copy2(snapshot_path, temporary)
-        os.chmod(temporary, FILE_MODE)
-        
-        # Step 2: Verify temporary is safe
+        verify_integrity(snapshot_path)
+
+        if not hasattr(os, "O_NOFOLLOW"):
+            raise RollbackError("O_NOFOLLOW is required for rollback files")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
+        descriptor = -1
+        while descriptor < 0:
+            candidate = target_db.parent / (
+                f".{target_db.name}.rollback-{uuid.uuid4()}.tmp"
+            )
+            try:
+                descriptor = os.open(candidate, flags, FILE_MODE)
+                temporary = candidate
+            except FileExistsError:
+                continue
+        try:
+            with snapshot_path.open("rb") as source, os.fdopen(
+                descriptor, "wb"
+            ) as destination:
+                descriptor = -1
+                shutil.copyfileobj(source, destination)
+                destination.flush()
+                os.fsync(destination.fileno())
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+        if temporary is None:
+            raise RollbackError("Temporary rollback file was not created")
         verify_file_security(temporary, "temporary rollback file")
-        
-        # Step 3: Atomic replacement (single filesystem operation)
-        # This prevents concurrent processes from accessing stale WAL/SHM
-        os.replace(temporary, target_db)
-        os.chmod(target_db, FILE_MODE)
-        
-        # Step 4: Clean orphaned side files AFTER atomic replacement
-        # New transactions will create their own WAL/SHM as needed
+        verify_integrity(temporary)
+
         for suffix in ("-wal", "-shm"):
             side_file = Path(f"{target_db}{suffix}")
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(FileNotFoundError):
                 side_file.unlink()
-        
+
+        os.replace(temporary, target_db)
+        temporary = None
+        os.chmod(target_db, FILE_MODE)
         verify_integrity(target_db)
-    except (OSError, RollbackError) as error:
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        if isinstance(error, RollbackError):
+            raise
         raise RollbackError(f"Cannot restore rollback snapshot: {error}") from error
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass

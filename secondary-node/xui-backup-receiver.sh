@@ -169,7 +169,9 @@ quarantine_part() {
     return 0
   fi
 
-  if ! target="$(mktemp "${INVALID_DIR}/${name}.${suffix}.XXXXXX")"; then
+  if [[ "$suffix" == "badsha256" ]]; then
+    target="${INVALID_DIR}/${name}.badsha256"
+  elif ! target="$(mktemp "${INVALID_DIR}/${name}.${suffix}.XXXXXX")"; then
     fail "QUARANTINE_TARGET_CREATE_FAILED" "archive=$name suffix=$suffix"
   fi
 
@@ -403,9 +405,15 @@ main() {
     fail "LOCK_FILE_INVALID" "reason=symlink_not_permitted lock_file=$LOCK_FILE"
   fi
 
-  # Append mode (>>) avoids truncating the content and metadata of an active lock file
+  # Create and hold the shared lock as xbackup with restrictive metadata.
   if ! exec 9>>"$LOCK_FILE"; then
     fail "RECEIVER_LOCK_OPEN_FAILED" "lock_file=$LOCK_FILE"
+  fi
+  if ! chmod 0600 -- "$LOCK_FILE"; then
+    fail "LOCK_FILE_INVALID" "reason=chmod_failed lock_file=$LOCK_FILE"
+  fi
+  if [[ "$(stat -c '%u:%g:%a' -- "$LOCK_FILE")" != "$(id -u):$(id -g):600" ]]; then
+    fail "LOCK_FILE_INVALID" "reason=ownership_or_mode lock_file=$LOCK_FILE"
   fi
 
   if ! flock -n 9; then

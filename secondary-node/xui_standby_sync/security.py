@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
 import stat
 from pathlib import Path
@@ -138,8 +137,24 @@ def validate_backup_file(
 
 def best_effort_wipe_file(path: Path, *, timeout: int = 15) -> None:
     """Best-effort wipe; does not claim physical deletion on journaled storage."""
-    if not path.exists() or path.is_symlink() or not path.is_file():
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise SecurityViolationError("O_NOFOLLOW is required for secure wiping")
+    try:
+        descriptor = os.open(
+            path, os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        )
+    except FileNotFoundError:
         return
+    except OSError as error:
+        raise SecurityViolationError(
+            f"Cannot open file for wiping {path}: {error}"
+        ) from error
+    try:
+        path_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(path_stat.st_mode):
+            raise SecurityViolationError(f"Wipe target must be a regular file: {path}")
+    finally:
+        os.close(descriptor)
     try:
         result = run_command(
             ["shred", "-u", "-z", "-n", "1", str(path)],
@@ -152,16 +167,26 @@ def best_effort_wipe_file(path: Path, *, timeout: int = 15) -> None:
         pass
 
     try:
-        with path.open("r+b", buffering=0) as handle:
+        descriptor = os.open(
+            path, os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        )
+        with os.fdopen(descriptor, "r+b", buffering=0) as handle:
             size = os.fstat(handle.fileno()).st_size
+            block = b"\x00" * (64 * 1024)
             handle.seek(0)
-            handle.write(b"\x00" * size)
+            remaining = size
+            while remaining:
+                written = handle.write(block[: min(len(block), remaining)])
+                if written <= 0:
+                    raise OSError("short wipe write")
+                remaining -= written
             handle.flush()
             os.fsync(handle.fileno())
         path.unlink(missing_ok=True)
-    except OSError:
-        with contextlib.suppress(OSError):
-            path.unlink(missing_ok=True)
+    except OSError as error:
+        raise SecurityViolationError(
+            f"Secure wipe failed; file retained: {path}"
+        ) from error
 
 
 def safe_clean_work_dir(work_dir: Path, *, safe_root: Path = SAFE_WORK_ROOT) -> None:

@@ -21,7 +21,7 @@ def _display_command(command: list[str]) -> str:
 def run_command(
     command: list[str],
     *,
-    timeout: int,
+    timeout: float,
     check: bool = True,
     env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:

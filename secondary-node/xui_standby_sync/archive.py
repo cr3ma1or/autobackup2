@@ -10,6 +10,7 @@ import queue
 import shutil
 import stat
 import tarfile
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +72,8 @@ _ALLOWED_ARCHIVE_NAMES = frozenset({
     "./x-ui.db",
     "./3xui_export.json",
 })
+_MAX_MANIFEST_SIZE = 1024 * 1024
+_COPY_BLOCK_SIZE = 1024 * 1024
 
 
 def _extract_worker(
@@ -110,14 +113,21 @@ def _extract_worker(
             )
             manifest: dict[str, Any] | None = None
             if manifest_member is not None:
+                if not 0 <= manifest_member.size <= _MAX_MANIFEST_SIZE:
+                    raise ArchiveValidationError("manifest.json exceeds maximum size")
                 manifest_source = archive.extractfile(manifest_member)
                 if manifest_source is not None:
                     try:
-                        manifest = json.loads(manifest_source.read())
-                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        manifest_bytes = manifest_source.read(_MAX_MANIFEST_SIZE + 1)
+                        if len(manifest_bytes) > _MAX_MANIFEST_SIZE:
+                            raise ArchiveValidationError(
+                                "manifest.json exceeds maximum size"
+                            )
+                        manifest = json.loads(manifest_bytes)
+                    except (json.JSONDecodeError, UnicodeDecodeError) as error:
                         raise ArchiveValidationError(
                             "manifest.json is not valid JSON"
-                        )
+                        ) from error
                     finally:
                         manifest_source.close()
             source = archive.extractfile(db_member)
@@ -125,10 +135,37 @@ def _extract_worker(
                 raise ArchiveValidationError("Cannot read archive member")
             destination = Path(work_dir) / "x-ui.db"
             descriptor = os.open(
-                destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE
+                destination,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                FILE_MODE,
             )
+            class LimitedReader:
+                def __init__(self, source: Any, limit: int) -> None:
+                    self.source = source
+                    self.remaining = limit
+                    self.copied = 0
+
+                def read(self, size: int = -1) -> bytes:
+                    if self.remaining <= 0:
+                        return b""
+                    requested = (
+                        self.remaining if size < 0 else min(size, self.remaining)
+                    )
+                    chunk = self.source.read(requested)
+                    self.copied += len(chunk)
+                    self.remaining -= len(chunk)
+                    return chunk
+
+            reader = LimitedReader(source, db_member.size)
             with source, os.fdopen(descriptor, "wb") as output:
-                shutil.copyfileobj(source, output, length=1024 * 1024)
+                shutil.copyfileobj(reader, output, length=_COPY_BLOCK_SIZE)
+                if reader.remaining != 0 or source.read(1):
+                    raise ArchiveValidationError("Database member size is invalid")
+            copied = reader.copied
+            if copied != db_member.size:
+                raise ArchiveValidationError(
+                    "Extracted data size differs from manifest"
+                )
             if manifest is not None:
                 expected = manifest.get("database_sha256")
                 if not isinstance(expected, str) or len(expected) != 64:
@@ -137,10 +174,10 @@ def _extract_worker(
                     )
                 try:
                     int(expected, 16)
-                except ValueError:
+                except ValueError as error:
                     raise ArchiveValidationError(
                         "manifest database_sha256 is invalid"
-                    )
+                    ) from error
                 digest = hashlib.sha256()
                 with destination.open("rb") as fh:
                     for block in iter(lambda: fh.read(1024 * 1024), b""):
@@ -150,7 +187,14 @@ def _extract_worker(
                         "Database hash differs from manifest"
                     )
         result_queue.put("")
-    except (OSError, tarfile.TarError, ArchiveValidationError) as error:
+    except (
+        OSError,
+        EOFError,
+        ValueError,
+        tarfile.TarError,
+        zlib.error,
+        ArchiveValidationError,
+    ) as error:
         result_queue.put(str(error))
 
 
@@ -168,6 +212,9 @@ def _extract_archive(
     if worker.is_alive():
         worker.terminate()
         worker.join(5)
+        if worker.is_alive():
+            worker.kill()
+            worker.join()
         raise ArchiveValidationError(f"Archive extraction timed out after {timeout}s")
     if worker.exitcode != 0:
         raise ArchiveValidationError(
@@ -180,6 +227,8 @@ def _extract_archive(
     finally:
         result_queue.close()
         result_queue.join_thread()
+    if not isinstance(result, str):
+        raise ArchiveValidationError("Archive worker returned an invalid result")
     if result:
         raise ArchiveValidationError(result)
 
@@ -244,7 +293,11 @@ def decrypt_and_extract(
                     timeout=min(timeout, 10),
                     check=False,
                 )
-        except CommandError:
-            pass
+        except CommandError as error:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "gpg-agent cleanup failed: %s", error
+            )
         finally:
             best_effort_wipe_file(payload_path, timeout=timeout)

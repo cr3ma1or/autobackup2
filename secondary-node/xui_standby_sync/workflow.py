@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
+from collections.abc import Callable
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from .database import (
     verify_invariants,
 )
 from .engine import apply_database_sync_plan
-from .exceptions import SyncError
+from .exceptions import OperationCancelledError, SyncError
 from .locks import LockSet
 from .models import (
     BackupMetadata,
@@ -91,17 +92,27 @@ def run_sync(
     config: RuntimeConfig,
     *,
     backup_path: Path | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> ExecutionResult:
-    """Run full sync lifecycle; all service/snapshot/engine orchestration lives here."""
+    """Run sync and unconditionally recover the service after a stop attempt."""
     run_id = "preview"
     service_stopped = False
     service_restarted = False
+    service_start_required = False
     rollback_attempted = False
     rollback_succeeded: bool | None = None
-    plan = None
+    mutation_started = False
+    mutation_committed = False
+    plan: SyncRunPlan | None = None
     backup: BackupMetadata | None = None
     snapshot = None
+
+    def ensure_not_cancelled() -> None:
+        if is_cancelled is not None and is_cancelled():
+            raise OperationCancelledError("Synchronization was cancelled")
+
     try:
+        ensure_not_cancelled()
         _verify_standby(config)
         with LockSet(
             config.paths.sync_lock_path,
@@ -143,31 +154,93 @@ def run_sync(
                 )
                 database_plan, _allowlist = _build_plan(config, source_db)
                 plan = SyncRunPlan(backup=backup, database=database_plan)
+                ensure_not_cancelled()
                 if config.options.dry_run:
                     return ExecutionResult(
                         True, run_id, plan, False, False, False, None, None, 0
                     )
-                stop_service(config.policy.service_name, config.policy.command_timeout)
-                service_stopped = True
-                snapshot = create_rollback_snapshot(
-                    target_db=config.paths.target_db,
-                    snapshots_dir=config.paths.snapshots_dir,
-                    backup=backup,
-                    max_rollback_copies=config.policy.max_rollback_copies,
-                )
-                authoritative_plan, _ = _build_plan(config, source_db)
-                plan = SyncRunPlan(backup=backup, database=authoritative_plan)
-                apply_database_sync_plan(
-                    target_db=config.paths.target_db,
-                    plan=authoritative_plan,
-                )
-                verify_integrity(config.paths.target_db)
-                if isinstance(invariant_keys, list):
-                    verify_invariants(config.paths.target_db, invariant_keys, baseline)
-                elif isinstance(invariant_keys, dict):
-                    verify_invariants(config.paths.target_db, invariant_keys)
-                start_service(config.policy.service_name, config.policy.command_timeout)
-                service_restarted = True
+
+                lifecycle_error: BaseException | None = None
+                service_start_required = True
+                try:
+                    stop_service(
+                        config.policy.service_name, config.policy.command_timeout
+                    )
+                    service_stopped = True
+                    snapshot = create_rollback_snapshot(
+                        target_db=config.paths.target_db,
+                        snapshots_dir=config.paths.snapshots_dir,
+                        backup=backup,
+                        max_rollback_copies=config.policy.max_rollback_copies,
+                    )
+                    ensure_not_cancelled()
+                    authoritative_plan, _ = _build_plan(config, source_db)
+                    plan = SyncRunPlan(backup=backup, database=authoritative_plan)
+                    mutation_started = True
+                    apply_database_sync_plan(
+                        target_db=config.paths.target_db,
+                        plan=authoritative_plan,
+                        is_cancelled=is_cancelled,
+                    )
+                    mutation_committed = True
+                    ensure_not_cancelled()
+                    verify_integrity(config.paths.target_db)
+                    if isinstance(invariant_keys, list):
+                        verify_invariants(
+                            config.paths.target_db, invariant_keys, baseline
+                        )
+                    elif isinstance(invariant_keys, dict):
+                        verify_invariants(config.paths.target_db, invariant_keys)
+                except BaseException as error:
+                    lifecycle_error = error
+                    if (
+                        mutation_started
+                        and not mutation_committed
+                        and snapshot is not None
+                    ):
+                        rollback_attempted = True
+                        try:
+                            restore_rollback_snapshot(
+                                target_db=config.paths.target_db,
+                                snapshot_path=snapshot.snapshot_path,
+                            )
+                            rollback_succeeded = True
+                        except BaseException as rollback_error:
+                            rollback_succeeded = False
+                            logger.critical(
+                                "Rollback failed after transaction failure: %s",
+                                rollback_error,
+                                exc_info=True,
+                            )
+                    elif mutation_committed:
+                        logger.critical(
+                            "Post-commit synchronization failure; database rollback "
+                            "is intentionally suppressed",
+                            exc_info=True,
+                        )
+                finally:
+                    if service_start_required:
+                        try:
+                            start_service(
+                                config.policy.service_name,
+                                config.policy.command_timeout,
+                            )
+                            service_restarted = True
+                        except BaseException as start_error:
+                            logger.critical(
+                                "Failed to restore x-ui service: %s",
+                                start_error,
+                                exc_info=True,
+                            )
+                            if lifecycle_error is None:
+                                lifecycle_error = start_error
+                            else:
+                                lifecycle_error = SyncError(
+                                    f"{lifecycle_error}; service restart failed: "
+                                    f"{start_error}"
+                                )
+                if lifecycle_error is not None:
+                    raise lifecycle_error
         return ExecutionResult(
             True,
             snapshot.run_id if snapshot else run_id,
@@ -179,20 +252,10 @@ def run_sync(
             None,
             0,
         )
-    except Exception as error:
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as error:
         logger.exception("Synchronization workflow failed")
-        if service_stopped and snapshot is not None:
-            rollback_attempted = True
-            try:
-                restore_rollback_snapshot(
-                    target_db=config.paths.target_db,
-                    snapshot_path=snapshot.snapshot_path,
-                )
-                rollback_succeeded = True
-                start_service(config.policy.service_name, config.policy.command_timeout)
-                service_restarted = True
-            except SyncError:
-                rollback_succeeded = False
         return ExecutionResult(
             False,
             snapshot.run_id if snapshot else run_id,

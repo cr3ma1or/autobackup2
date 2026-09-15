@@ -201,8 +201,10 @@ class TestSecureFileWiping:
         symlink_file = tmp_path / "symlink.txt"
         symlink_file.symlink_to(target_file)
         
-        # Should not raise and target should remain
-        best_effort_wipe_file(symlink_file)
+        # Symlink rejection is the hardened contract; target must remain intact.
+        with pytest.raises(SecurityViolationError):
+            best_effort_wipe_file(symlink_file)
+        assert target_file.read_text() == "content"
         assert target_file.exists()
         assert target_file.read_text() == "content"
 
@@ -246,7 +248,7 @@ class TestBackupFileValidation:
         symlink_backup = tmp_path / "symlink-backup.tar.gz.gpg"
         symlink_backup.symlink_to(real_backup)
         
-        with pytest.raises(SecurityViolationError, match="must be a regular non-symlink file"):
+        with pytest.raises(SecurityViolationError):
             validate_backup_file(symlink_backup)
 
     def test_sidecar_symlink_rejection(self, tmp_path: Path):

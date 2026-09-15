@@ -64,9 +64,7 @@ class TestCliStatus:
                 config.policy.service_name = "x-ui"
                 mock_config.return_value = config
 
-                with patch("xui_standby_sync.cli.run_command") as mock_run:
-                    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-                    
+                with patch("xui_standby_sync.cli.collect_status", return_value={}):
                     with patch("builtins.print") as mock_print:
                         result = main(["status", "--json"])
                         
@@ -94,9 +92,7 @@ class TestCliStatus:
                 config.policy.service_name = "x-ui"
                 mock_config.return_value = config
 
-                with patch("xui_standby_sync.cli.run_command") as mock_run:
-                    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-                    
+                with patch("xui_standby_sync.cli.collect_status", return_value={}):
                     with patch("builtins.print") as mock_print:
                         result = main(["status"])
                         
@@ -126,9 +122,9 @@ class TestCliValidate:
                 config.paths.allowlist_path = tmp_path / "allowlist.json"
                 config.paths.allowlist_path.write_text(json.dumps({
                     "tables": {
-                        "inbounds": {"allowed_columns": ["id"]},
-                        "clients": {"allowed_columns": ["id"]},
-                        "client_traffics": {"allowed_columns": ["id"]},
+                        "inbounds": {"matching_key": "id", "allowed_columns": ["id"]},
+                        "clients": {"matching_key": "id", "allowed_columns": ["id"]},
+                        "client_traffics": {"matching_key": "id", "allowed_columns": ["id"]},
                         "settings": {"allowed_keys": ["webPort"]}
                     }
                 }))
@@ -219,19 +215,18 @@ class TestCliRollback:
                 config.policy.command_timeout = 30
                 mock_config.return_value = config
 
-                with patch("xui_standby_sync.cli.run_command") as mock_run:
-                    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-                    
-                    with patch("xui_standby_sync.cli.restore_rollback_snapshot"):
-                        with patch("builtins.print") as mock_print:
-                            result = main([
-                                "rollback",
-                                "--snapshot", str(snapshot_path),
-                                "--yes"
-                            ])
-                            
-                            assert result == 0
+                with patch("xui_standby_sync.cli.LockSet"):
+                    with patch("xui_standby_sync.cli.stop_service"):
+                        with patch("xui_standby_sync.cli.start_service"):
+                            with patch("xui_standby_sync.cli.restore_rollback_snapshot"):
+                                with patch("builtins.print") as mock_print:
+                                    result = main([
+                                        "rollback",
+                                        "--snapshot", str(snapshot_path),
+                                        "--yes"
+                                    ])
 
+                                    assert result == 0
 
 class TestCliSyncCommand:
     """Test sync command."""

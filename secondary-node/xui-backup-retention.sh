@@ -45,10 +45,11 @@ readonly INCOMING_DIR="/opt/xui-backups/incoming"
 readonly INVALID_DIR="/opt/xui-backups/invalid"
 readonly LOG_FILE="/opt/xui-backups/receiver.log"
 readonly LOCK_FILE="/opt/xui-backups/.store.lock"
+readonly CONFIG_FILE="/etc/x-ui/sync.env"
 readonly LOCK_WAIT_SECONDS=7200
 # Retention constraints
 readonly KEEP_MIN_ARCHIVES=3
-readonly KEEP_VALID_DAYS=21
+readonly DEFAULT_MAX_AGE_DAYS=14
 readonly KEEP_INVALID_DAYS=7
 
 # ------------------------------------------------------------------------------
@@ -90,6 +91,26 @@ on_terminate() {
   exit 143
 }
 
+read_max_age_days() {
+  local line key value
+  local -i max_age_days=$DEFAULT_MAX_AGE_DAYS
+  [[ -r "$CONFIG_FILE" ]] || { printf '%s\n' "$max_age_days"; return 0; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    key="${BASH_REMATCH[2]}"
+    [[ "$key" == "MAX_AGE_DAYS" ]] || continue
+    value="${BASH_REMATCH[3]}"
+    value="${value#\"}"
+    value="${value%\"}"
+    value="${value#\'}"
+    value="${value%\'}"
+    [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail "invalid_MAX_AGE_DAYS"
+    max_age_days=$((10#$value))
+  done <"$CONFIG_FILE"
+  ((max_age_days > 0)) || fail "invalid_MAX_AGE_DAYS"
+  printf '%s\n' "$max_age_days"
+}
+
 fail() {
   if [[ -w "$LOG_FILE" ]]; then
     printf '%s [ERROR] retention-v%s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SCRIPT_VERSION" "$1" >>"$LOG_FILE" 2>/dev/null || true
@@ -107,7 +128,9 @@ trap on_interrupt INT
 trap on_terminate TERM
 
 main() {
+  local -i max_age_days
   (($# == 0)) || fail 'cli_arguments_not_supported'
+  max_age_days="$(read_max_age_days)"
   # ------------------------------------------------------------------------------
   # Pre-flight Checks
   # ------------------------------------------------------------------------------
@@ -117,10 +140,12 @@ main() {
   [[ -f "$LOG_FILE" && -w "$LOG_FILE" ]] || fail 'receiver_log_missing_or_not_writable'
   [[ -f "$LOCK_FILE" && ! -L "$LOCK_FILE" && -w "$LOCK_FILE" ]] || fail 'store_lock_missing_or_unsafe'
 
-  if ! exec 9>"$LOCK_FILE"; then
+  if ! exec 9>>"$LOCK_FILE"; then
     fail "store_lock_open_failed lock_file=$LOCK_FILE"
   fi
-
+  if ! chmod 0600 -- "$LOCK_FILE"; then
+    fail "store_lock_invalid_mode lock_file=$LOCK_FILE"
+  fi
   if ! flock -w "$LOCK_WAIT_SECONDS" 9; then
     fail "store_lock_timeout lock_file=$LOCK_FILE wait_seconds=$LOCK_WAIT_SECONDS"
   fi
@@ -177,8 +202,8 @@ main() {
       base="${archive##*/}"
       sidecar="${archive}.sha256"
 
-      if [[ -z "$(find "$archive" -maxdepth 0 -mtime "+$KEEP_VALID_DAYS" -print -quit)" ]]; then
-        log "preserved reason=within_retention_window archive=$base"
+      if [[ -z "$(find "$archive" -maxdepth 0 -mtime "+$max_age_days" -print -quit)" ]]; then
+        log "preserved reason=within_retention_window archive=$base max_age_days=$max_age_days"
         continue
       fi
 
