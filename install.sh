@@ -252,8 +252,8 @@ ensure_dir() {
 # Role detection
 # ------------------------------------------------------------------------------
 detect_role() {
-  if [[ ! -t 0 ]] && (( UNATTENDED == 0 )); then
-    warn "No stdin TTY detected; automatically enabling --unattended mode"
+  if [[ ! -t 0 || ! -t 1 ]] && (( UNATTENDED == 0 )); then
+    warn "Interactive TTY is unavailable; automatically enabling --unattended mode"
     UNATTENDED=1
   fi
 
@@ -427,8 +427,8 @@ install_primary() {
   # -- Scripts -----------------------------------------------------------------
   local repo_primary="${REPO_ROOT}/primary-node"
   [[ -f "$repo_primary/xui-backup.sh" ]] || die "Cannot find primary-node/xui-backup.sh in repo root: $REPO_ROOT"
-  install_file "$repo_primary/xui-backup.sh"  "${PRIMARY_BIN_DIR}/xui-backup"  0755 root:root
-  install_file "$repo_primary/xui-restore.sh" "${PRIMARY_BIN_DIR}/xui-restore" 0755 root:root
+  install_file "$repo_primary/xui-backup.sh"  "${PRIMARY_BIN_DIR}/xui-backup"  0700 root:root
+  install_file "$repo_primary/xui-restore.sh" "${PRIMARY_BIN_DIR}/xui-restore" 0700 root:root
 
   # -- Config templates --------------------------------------------------------
   if [[ ! -f "$PRIMARY_ENV_FILE" ]]; then
@@ -545,12 +545,12 @@ EOF
       write_unit "xui-backup.timer" "$(
 cat <<EOF
 [Unit]
-Description=Run 3x-ui backup daily at 03:00 UTC
+Description=Run 3x-ui backup daily at 03:20 UTC
 Requires=xui-backup.service
 
 [Timer]
-OnCalendar=*-*-* 03:00:00 UTC
-RandomizedDelaySec=600
+OnCalendar=*-*-* 03:20:00 UTC
+RandomizedDelaySec=20min
 Persistent=true
 AccuracySec=1min
 
@@ -625,7 +625,7 @@ PY
 
   # -- Backup store owned by xbackup -------------------------------------------
   ensure_dir "$SB_BASE_DIR" root:"$SB_USER" 0750
-  ensure_dir "$SB_BIN_DIR" root:xbackup 0755
+  ensure_dir "$SB_BIN_DIR" root:root 0755
   ensure_dir "$SB_INCOMING_DIR" "$SB_USER:$SB_USER" 0700
   ensure_dir "$SB_INVALID_DIR" "$SB_USER:$SB_USER" 0700
   ensure_dir "$SB_WORK_SYNC_DIR" root:root 0700
@@ -640,9 +640,9 @@ PY
   # -- Bash scripts ---------------------------------------------------------------
   local repo_secondary="${REPO_ROOT}/secondary-node"
   [[ -d "$repo_secondary" ]] || die "Cannot find secondary-node/ in repo root: $REPO_ROOT"
-  install_file "$repo_secondary/xui-backup-receiver.sh"   "${SB_BIN_DIR}/xui-backup-receiver.sh"   0755 "$SB_USER:$SB_USER"
-  install_file "$repo_secondary/xui-backup-retention.sh"  "${SB_BIN_DIR}/xui-backup-retention.sh"  0755 "$SB_USER:$SB_USER"
-  install_file "$repo_secondary/xui-backup-health.sh"     "${SB_BIN_DIR}/xui-backup-health.sh"     0755 "$SB_USER:$SB_USER"
+  install_file "$repo_secondary/xui-backup-receiver.sh"   "${SB_BIN_DIR}/xui-backup-receiver.sh"   0755 root:root
+  install_file "$repo_secondary/xui-backup-retention.sh"  "${SB_BIN_DIR}/xui-backup-retention.sh"  0755 root:root
+  install_file "$repo_secondary/xui-backup-health.sh"     "${SB_BIN_DIR}/xui-backup-health.sh"     0755 root:root
 
   ln -sf "${SB_BIN_DIR}/xui-backup-health.sh" "${PRIMARY_BIN_DIR}/xui-backup-health"
   ln -sf "${SB_BIN_DIR}/xui-backup-retention.sh" "${PRIMARY_BIN_DIR}/xui-backup-retention"
@@ -711,7 +711,10 @@ PY
   if [[ ! -f "$SB_STANDBY_MODE_FILE" ]]; then
     printf 'STANDBY\n' >"$SB_STANDBY_MODE_FILE"
     chown -h root:root "$SB_STANDBY_MODE_FILE"
-    chmod 0600 "$SB_STANDBY_MODE_FILE"
+    chmod 0644 "$SB_STANDBY_MODE_FILE"
+  else
+    chown -h root:root "$SB_STANDBY_MODE_FILE"
+    chmod 0644 "$SB_STANDBY_MODE_FILE"
   fi
 
   if [[ ! -f "$SB_SYNC_LOG_FILE" ]]; then
@@ -734,12 +737,15 @@ Wants=xui-standby-sync.timer
 
 [Service]
 Type=oneshot
-ExecStart=${PRIMARY_BIN_DIR}/xui-standby sync --json
+EnvironmentFile=-${SB_SYNC_ENV_FILE}
+ExecStart=${SB_VENV_DIR}/bin/xui-standby sync --json
 TimeoutStartSec=600
+Restart=on-failure
+RestartSec=30s
 Nice=19
 IOSchedulingClass=idle
 ProtectSystem=strict
-ReadWritePaths=/etc/x-ui /opt/xui-backups /opt/xui-standby /run /var/log
+ReadWritePaths=/etc/x-ui /opt/xui-backups ${SB_SYNC_DIR} /run /var/log
 ProtectHome=true
 
 [Install]
@@ -782,11 +788,11 @@ EOF
       write_unit "xui-backup-retention.timer" "$(
 cat <<EOF
 [Unit]
-Description=Run 3x-ui backup retention daily at 04:00 UTC
+Description=Run 3x-ui backup retention daily at 04:45 UTC
 Requires=xui-backup-retention.service
 
 [Timer]
-OnCalendar=*-*-* 04:00:00 UTC
+OnCalendar=*-*-* 04:45:00 UTC
 RandomizedDelaySec=300
 Persistent=true
 AccuracySec=1min
