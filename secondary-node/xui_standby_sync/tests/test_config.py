@@ -191,11 +191,34 @@ class TestRuntimeConfigConstruction:
         """CLI overrides are applied to config."""
         values = {}
         cli_overrides = {"CMD_TIMEOUT": "60", "MAX_AGE_SECONDS": "7200"}
-        
         config = build_runtime_config(values, cli_overrides=cli_overrides)
-        
         assert config.policy.command_timeout == 60
         assert config.policy.max_age_seconds == 7200
+
+    def test_path_overrides_are_resolved_without_root_restrictions(
+        self, tmp_path: Path
+    ):
+        """Sandbox path overrides are normalized and may be outside /etc or /opt."""
+        sandbox = tmp_path / "sandbox"
+        config = build_runtime_config(
+            {
+                "TARGET_DB_PATH": str(sandbox / "target" / "x-ui.db"),
+                "INCOMING_DIR": str(sandbox / "incoming"),
+                "WORK_DIR": str(sandbox / "work"),
+                "SNAPSHOTS_DIR": str(sandbox / "snapshots"),
+                "GNUPG_DIR": str(sandbox / "gnupg"),
+                "STANDBY_MODE_FILE": str(sandbox / "standby-mode"),
+                "ALLOWLIST_PATH": str(sandbox / "allowlist.json"),
+            }
+        )
+
+        assert config.paths.target_db == (sandbox / "target" / "x-ui.db").resolve()
+        assert config.paths.incoming_dir == (sandbox / "incoming").resolve()
+        assert config.paths.work_root == (sandbox / "work").resolve()
+        assert config.paths.snapshots_dir == (sandbox / "snapshots").resolve()
+        assert config.paths.gnupg_dir == (sandbox / "gnupg").resolve()
+        assert config.paths.standby_mode_file == (sandbox / "standby-mode").resolve()
+        assert config.paths.allowlist_path == (sandbox / "allowlist.json").resolve()
 
     def test_config_with_force_and_dry_run(self, tmp_path: Path):
         """Force and dry_run options are properly set."""

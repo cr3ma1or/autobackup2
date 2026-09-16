@@ -53,6 +53,13 @@ _ALLOWED_ENV_KEYS = {
     "MAX_CLOCK_SKEW_SECONDS",
     "MAX_UNPACK_SIZE_BYTES",
     "MAX_ROLLBACK_COPIES",
+    "TARGET_DB_PATH",
+    "INCOMING_DIR",
+    "WORK_DIR",
+    "SNAPSHOTS_DIR",
+    "GNUPG_DIR",
+    "STANDBY_MODE_FILE",
+    "ALLOWLIST_PATH",
 }
 # Full 40-char OpenPGP v4 fingerprints only. Short/long key IDs are rejected:
 # they are vulnerable to collision/spoofing attacks, and the primary side
@@ -178,6 +185,11 @@ def load_values(config_path: Path | None = None) -> dict[str, str]:
     return values
 
 
+def _path_override(values: Mapping[str, str], key: str, default: Path) -> Path:
+    value = values.get(key)
+    return default if value is None else Path(value).resolve()
+
+
 def build_runtime_config(
     values: Mapping[str, str],
     *,
@@ -210,15 +222,17 @@ def build_runtime_config(
         )
     require_signature = _parse_bool(merged.get("REQUIRE_GPG_SIGNATURE"), True)
     paths = PathsConfig(
-        target_db=TARGET_DB_PATH,
-        allowlist_path=ALLOWLIST_PATH,
-        incoming_dir=INCOMING_DIR,
-        work_root=WORK_DIR,
-        snapshots_dir=RUN_SNAPSHOTS_DIR,
-        gnupg_dir=GNUPG_DIR,
+        target_db=_path_override(merged, "TARGET_DB_PATH", TARGET_DB_PATH),
+        allowlist_path=_path_override(merged, "ALLOWLIST_PATH", ALLOWLIST_PATH),
+        incoming_dir=_path_override(merged, "INCOMING_DIR", INCOMING_DIR),
+        work_root=_path_override(merged, "WORK_DIR", WORK_DIR),
+        snapshots_dir=_path_override(merged, "SNAPSHOTS_DIR", RUN_SNAPSHOTS_DIR),
+        gnupg_dir=_path_override(merged, "GNUPG_DIR", GNUPG_DIR),
         sync_lock_path=SYNC_LOCK_FILE,
         store_lock_path=STORE_LOCK_FILE,
-        standby_mode_file=STANDBY_MODE_FILE,
+        standby_mode_file=_path_override(
+            merged, "STANDBY_MODE_FILE", STANDBY_MODE_FILE
+        ),
         failover_lock_file=FAILOVER_LOCK_FILE,
         log_file=LOG_FILE,
     )

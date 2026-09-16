@@ -47,16 +47,17 @@
 ### Secondary Node
 
 - `/opt/xui-backups/` (`0750 root:xbackup`) — корневой каталог хранилища.
+- `/opt/xui-backups/.store.lock` (`0600 xbackup:xbackup`) — общий advisory lock публикации и синхронизации.
 - `/opt/xui-backups/bin/xui-backup-receiver.sh` (`0755 root:root`) — точка входа SSH Forced Command.
 - `/opt/xui-backups/bin/xui-backup-retention.sh` (`0700 root:root`) — скрипт очистки.
 - `/opt/xui-backups/bin/xui-backup-health.sh` (`0700 root:root`) — read-only сенсор SLA.
 - `/usr/local/bin/xui-backup-health` (`symlink -> /opt/xui-backups/bin/...`).
 - `/opt/xui-backups/incoming/` (`0700 xbackup:xbackup`) — каталог валидных архивов.
 - `/opt/xui-backups/invalid/` (`0700 xbackup:xbackup`) — карантин поврежденных файлов.
-- `/etc/x-ui/sync.env` (`0400 root:root`) — конфигурация модуля синхронизации.
-- `/etc/x-ui/standby-snapshots/` (`0700 root:root`) — снимки отката (`last-good-pre-sync.db`).
+- `/etc/x-ui/sync.env` (`0600 root:root`) — конфигурация модуля синхронизации.
+- `/etc/x-ui/standby-snapshots/` (`0700 root:root`) — корень снимков отката; runtime-пути по умолчанию находятся в `runs/`.
 - `/etc/x-ui/standby-mode` (`0644 root:root`) — маркер состояния (`STANDBY` / `PROMOTED`).
-- `/run/xui-standby.lock` (`0600 root:root`) — блокировка активных процессов репликации.
+- `/run/xui-standby.lock` (`0600 root:root`) — блокировка failover; `/run/xui-standby-sync.lock` (`0600 root:root`) — блокировка процесса синхронизации.
 
 ## 3. Шаблоны конфигурационных файлов (`.env`)
 
@@ -90,14 +91,13 @@ TRANSFER_TIMEOUT_SEC=900
 ### Secondary: `/etc/x-ui/sync.env`
 
 ```
-STANDBY_MODE_FILE="/etc/x-ui/standby-mode"
-LOCK_FILE="/run/xui-standby.lock"
 TARGET_DB_PATH="/etc/x-ui/x-ui.db"
 INCOMING_DIR="/opt/xui-backups/incoming"
+WORK_DIR="/opt/xui-backups/.work-sync"
+SNAPSHOTS_DIR="/etc/x-ui/standby-snapshots/runs"
+GNUPG_DIR="/etc/x-ui/standby/secondary-sync-gnupg"
+STANDBY_MODE_FILE="/etc/x-ui/standby-mode"
 ALLOWLIST_PATH="/etc/x-ui/standby/allowlist.json"
-GNUPGHOME="/etc/x-ui/standby/secondary-sync-gnupg"
-SNAPSHOTS_DIR="/etc/x-ui/standby-snapshots"
-WORK_SYNC_DIR="/opt/xui-backups/.work-sync"
 
 SEND_TELEGRAM=1
 TG_BOT_TOKEN="<TG_BOT_TOKEN>"
@@ -129,4 +129,13 @@ AllowUsers root xbackup@<PRIMARY_IP>
   `OnCalendar=*-*-* 04:45:00 UTC`, `Persistent=true`.
 
 - **Secondary Sync Timer (`/etc/systemd/system/xui-standby-sync.timer`):**
-  `OnCalendar=*-*-* 00/2:00:00 UTC`, `RandomizedDelaySec=300`.
+  `OnCalendar=*-*-* 00/2:00:00`, `RandomizedDelaySec=300`, `Persistent=true`.
+
+## 6. CLI Standby
+
+- `xui-standby validate --json` — проверка конфигурации и окружения.
+- `xui-standby status [--json]` — состояние БД, locks, marker и последнего запуска.
+- `xui-standby plan --json` — read-only план слияния.
+- `xui-standby sync --dry-run --json` — безопасная проверка без изменений.
+- `xui-standby sync --json` — запуск управляемой репликации.
+- `xui-standby rollback --latest --yes` — откат по последнему снапшоту.

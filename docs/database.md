@@ -91,13 +91,12 @@ CREATE TABLE client_traffics (
 
 ## 3. Архитектура Dual-Layer Storage
 
-При обновлении клиентов данные синхронизируются одновременно:
+Dual-Layer merge реализован и подтверждён E2E smoke-тестом. При каждой мутации клиентов данные изменяются в рамках **одной** SQLite-транзакции одновременно:
 
 1. В строках таблицы `clients`.
+2. В сериализованном JSON-массиве `inbounds.settings.clients` соответствующего `inbound_id`.
 
-2. В сериализованном JSON внутри поля `inbounds.settings` для соответствующего `inbound_id`.
-
-Запрещено выполнять вставку в `clients` без эквивалентной модификации JSON ядра Xray.
+Запрещено выполнять вставку, обновление или удаление в `clients` без синхронной модификации JSON ядра Xray. До `COMMIT` план и инварианты проверяются; при ошибке выполняется `ROLLBACK`.
 
 ## 4. Спецификация `allowlist.json`
 
@@ -151,12 +150,19 @@ JSON
   "assert_invariants": [
     "webPort",
     "subPort",
-    "tgBotEnable"
+    "tgBotEnable",
+    "subURI"
   ]
 }
 ```
 
-## 5. Протокол транзакционности в Python
+Фактический файл использует верхний уровень `tables` для описаний `inbounds`, `clients`, `client_traffics` и `settings`; приведённая структура иллюстрирует ключи политики.
+
+## 5. Защита Inbound 1 Reality
+
+Ядро репликации сохраняет локальные данные `stream_settings` Inbound 1: Reality network identity, ключи, SNI/server names и external proxy. Эти параметры не могут быть перезаписаны donor-базой. После слияния инварианты Standby проверяются до фиксации транзакции.
+
+## 6. Протокол транзакционности в Python
 
 Соединение с БД на запись открывается с ручным управлением границами транзакций:
 
@@ -166,10 +172,13 @@ conn.execute("PRAGMA foreign_keys = ON;")
 conn.execute("PRAGMA busy_timeout = 5000;")
 
 try:
-    conn.execute("BEGIN IMMEDIATE TRANSACTION;")
-    # Мутации данных...
+    conn.execute("BEGIN IMMEDIATE;")
+    # Dual-Layer mutations and invariant assertions...
     conn.execute("COMMIT;")
 except Exception:
     conn.execute("ROLLBACK;")
     raise
+```
+
+`isolation_level=None` исключает неявные транзакции; границы `BEGIN IMMEDIATE`, `COMMIT` и `ROLLBACK` остаются явными и контролируемыми.
 ```

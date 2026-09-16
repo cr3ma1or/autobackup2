@@ -139,10 +139,7 @@ def make_archive(donor_db: Path, incoming: Path, gpg_home: Path) -> Path:
     return archive_name
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--keep", action="store_true")
-    args = parser.parse_args()
+def run_smoke(args: argparse.Namespace) -> int:
     sandbox = ROOT / "sandbox"
     if sandbox.exists() and not args.keep: shutil.rmtree(sandbox)
     sandbox.mkdir(mode=0o700, exist_ok=True)
@@ -185,5 +182,18 @@ def main() -> int:
     checks = {"clients table": len(rows) == 2, "dual-layer": {x["uuid"] for x in obj["clients"]} == {x[0] for x in rows}, "webPort": settings["webPort"] == "60291", "subPort": settings["subPort"] == "2096", "tgBotEnable": settings["tgBotEnable"] == "false", "Reality identity": reality["settings"]["publicKey"] == "STANDBY-PUBLIC-KEY" and reality["settings"]["privateKey"] == "STANDBY-PRIVATE-KEY"}
     for name, ok in checks.items(): log(f"{name}: {'PASS' if ok else 'FAIL'}")
     return 0 if result.success and all(checks.values()) else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--keep", action="store_true", help="retain sandbox for diagnostics")
+    args = parser.parse_args()
+    sandbox = ROOT / "sandbox"
+    try:
+        return run_smoke(args)
+    finally:
+        if not args.keep and sandbox.exists():
+            shutil.rmtree(sandbox)
+
 
 if __name__ == "__main__": raise SystemExit(main())
