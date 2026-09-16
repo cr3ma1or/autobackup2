@@ -1,0 +1,9 @@
+{
+  "run_id": "20260915T223118Z-4e08568d-4520-4788-8eda-e6559911e9e0",
+  "created_at": "2026-09-15T22:31:18.311586+00:00",
+  "snapshot_path": "/home/cremator/autobackup/autobackup2/sandbox/snapshots/20260915T223118Z-4e08568d-4520-4788-8eda-e6559911e9e0/target-before-sync.db",
+  "archive_name": "xui-backup-20260915T223117Z-e2e.tar.gz.gpg",
+  "archive_sha256": "4e0747de2031edc5a26e7e366e89c9304a1df5dfbed4c622e3f1ef2d87d6d60b",
+  "signer_fingerprint": null,
+  "status": "created"
+}
