@@ -411,12 +411,37 @@ validate_ipv4() {
 }
 
 initialize_secondary_nat() {
-  local primary_ip="$1" chain="XUI_TRANSIT_DNAT" rules_dir="/etc/iptables"
-  local rules_file="${rules_dir}/rules.v4" temp_file pair external_port internal_port
-  local -a mappings=("2096:39285" "443:443" "53810:39284")
+  local primary_ip="$1" transit_port_map="${2:-${TRANSIT_PORT_MAP:-}}"
+  local chain="XUI_TRANSIT_DNAT" rules_dir="/etc/iptables"
+  local rules_file="${rules_dir}/rules.v4" temp_file pair external_port internal_port line
+  local -a mappings=()
 
-  [[ -n "$primary_ip" ]] || { warn "PRIMARY_IP is empty; skipping iptables DNAT initialization"; return 0; }
-  validate_ipv4 "$primary_ip" || { warn "PRIMARY_IP is invalid; skipping iptables DNAT initialization"; return 0; }
+  if [[ -z "$transit_port_map" && -r "$SB_SYNC_ENV_FILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" == "TRANSIT_PORT_MAP="* ]] || continue
+      transit_port_map="${line#TRANSIT_PORT_MAP=}"
+      if [[ "$transit_port_map" =~ ^\"(.*)\"$ ]]; then
+        transit_port_map="${BASH_REMATCH[1]}"
+      fi
+    done < "$SB_SYNC_ENV_FILE"
+  fi
+
+  if [[ -z "$transit_port_map" && "$UNATTENDED" -eq 0 ]]; then
+    transit_port_map="$(ask "Transit port mappings (external:primary, space-separated; empty to skip)")"
+    [[ -n "$transit_port_map" ]] && set_env_value "$SB_SYNC_ENV_FILE" TRANSIT_PORT_MAP "$transit_port_map"
+  fi
+
+  if [[ -n "$transit_port_map" ]]; then
+    read -r -a mappings <<< "$transit_port_map"
+    for pair in "${mappings[@]}"; do
+      if [[ ! "$pair" =~ ^([0-9]{1,5}):([0-9]{1,5})$ ]]; then
+        warn "Invalid TRANSIT_PORT_MAP entry '$pair'; creating an empty $chain chain"
+        mappings=()
+        break
+      fi
+    done
+  fi
+
   command -v iptables >/dev/null 2>&1 || { warn "iptables not found; skipping DNAT initialization"; return 0; }
 
   if iptables -w -t nat -nL "$chain" >/dev/null 2>&1; then
@@ -424,18 +449,30 @@ initialize_secondary_nat() {
     return 0
   fi
 
-  info "Creating iptables chain $chain for Primary $primary_ip"
+  if ((${#mappings[@]} > 0)); then
+    [[ -n "$primary_ip" ]] || { warn "PRIMARY_IP is empty; creating an empty $chain chain"; mappings=(); }
+    if ((${#mappings[@]} > 0)); then
+      validate_ipv4 "$primary_ip" || { warn "PRIMARY_IP is invalid; creating an empty $chain chain"; mappings=(); }
+    fi
+  fi
+
+  info "Creating iptables chain $chain"
   iptables -w -t nat -N "$chain"
-  iptables -w -t nat -C PREROUTING -j "$chain" 2>/dev/null || \
-    iptables -w -t nat -I PREROUTING 1 -j "$chain"
-  for pair in "${mappings[@]}"; do
-    external_port="${pair%%:*}"
-    internal_port="${pair##*:}"
-    iptables -w -t nat -A "$chain" -p tcp --dport "$external_port" \
-      -j DNAT --to-destination "${primary_ip}:${internal_port}"
-  done
-  iptables -w -t nat -C POSTROUTING -m conntrack --ctstate DNAT -d "$primary_ip" -j MASQUERADE 2>/dev/null || \
-    iptables -w -t nat -A POSTROUTING -m conntrack --ctstate DNAT -d "$primary_ip" -j MASQUERADE
+  if ((${#mappings[@]} > 0)); then
+    info "Adding DNAT rules for Primary $primary_ip"
+    iptables -w -t nat -C PREROUTING -j "$chain" 2>/dev/null || \
+      iptables -w -t nat -I PREROUTING 1 -j "$chain"
+    for pair in "${mappings[@]}"; do
+      external_port="${pair%%:*}"
+      internal_port="${pair##*:}"
+      iptables -w -t nat -A "$chain" -p tcp --dport "$external_port" \
+        -j DNAT --to-destination "${primary_ip}:${internal_port}"
+    done
+    iptables -w -t nat -C POSTROUTING -m conntrack --ctstate DNAT -d "$primary_ip" -j MASQUERADE 2>/dev/null || \
+      iptables -w -t nat -A POSTROUTING -m conntrack --ctstate DNAT -d "$primary_ip" -j MASQUERADE
+  else
+    info "No valid TRANSIT_PORT_MAP configured; leaving $chain empty"
+  fi
 
   if command -v netfilter-persistent >/dev/null 2>&1; then
     netfilter-persistent save

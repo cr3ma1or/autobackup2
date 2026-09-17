@@ -2,7 +2,7 @@
 
 ## 1. Контуры наблюдения
 
-1. **Data Plane:** Мониторинг сокетов (443, 2096, 60291, 39284), счетчиков IPTables DNAT, проверка исходящего шлюза wireproxy.
+1. **Data Plane:** Мониторинг сокетов (443, 2096, 60291, <example>39284</example>), счетчиков IPTables DNAT, проверка исходящего шлюза wireproxy.
 2. **Control Plane:** Состояние systemd-юнитов и таймеров, статус режима `/etc/x-ui/standby-mode`.
 3. **Storage Plane:** Сенсор `xui-backup-health.sh`, проверка возраста последнего архива (<26 ч), целостность SHA-256.
 4. **Database Plane:** `PRAGMA integrity_check;`, контроль размера WAL-файлов (<10 МБ).
@@ -30,8 +30,8 @@
 ### Primary Node
 
 - `443/tcp` — Inbound VLESS Reality
-- `39284/tcp` — Веб-панель управления 3x-ui
-- `39285/tcp` — Выдача подписок клиентам
+- `<example>39284</example>/tcp` — Веб-панель управления 3x-ui
+- `<example>39285</example>/tcp` — Выдача подписок клиентам
 - `40000/tcp` — Локальный исходящий WARP SOCKS5
 - `<PRIMARY_SSH_PORT>/tcp` — Системный порт SSH
 
@@ -40,5 +40,5 @@
 - `443/tcp` — Inbound VLESS Reality (локальный резерв / транзит DNAT)
 - `2096/tcp` — Локальный саб-сервер (в режиме ожидания перехвачен DNAT)
 - `60291/tcp` — Локальная веб-панель управления 3x-ui
-- `53810/tcp` — Транзитный порт доступа к веб-панели Primary Node
+- `<example>53810</example>/tcp` — Транзитный порт доступа к веб-панели Primary Node
 - `<SECONDARY_SSH_PORT>/tcp` — Системный SSH и порт приемника бэкапов

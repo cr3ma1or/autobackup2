@@ -194,7 +194,7 @@ get_storage_metrics() {
   # line of output -- this is guaranteed to be a data row, not the header.
 
   awk '
-    NR > 1 { buf = (buf ? buf " " $0) : $0 }
+    NR > 1 { buf = (buf ? buf " " $0 : $0) }
     END {
       n = split(buf, f, /[ \t]+/)
       if (n < 5) { exit 1 }

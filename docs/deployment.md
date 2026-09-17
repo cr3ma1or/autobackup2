@@ -16,9 +16,9 @@
 │ - Служебный пользователь: xbackup (UID 999, shell: /bin/bash) │
 │ - 3x-ui сервисы: Web 60291, Sub 2096, Reality 443 │
 │ - IPTables DNAT (режим STANDBY): │
-│ :2096 -> <PRIMARY_IP>:39285 │
+│ :2096 -> <PRIMARY_IP>:<example>39285</example> │
 │ :443 -> <PRIMARY_IP>:443 │
-│ :53810 -> <PRIMARY_IP>:39284 │
+│ :<example>53810</example> -> <PRIMARY_IP>:<example>39284</example> │
 └───────────────────▲────────────────────────────────────────────────────┘
 │ SSH Stream (Forced Command) | Port: <SECONDARY_SSH_PORT>
 │ Dual-Recipient GPG AES-256 Encrypted Tarball
@@ -27,7 +27,7 @@
 │ Public IP: <PRIMARY_IP> | OS: Ubuntu 24.04 LTS | SSH: <PRIMARY_SSH_PORT>│
 │ Роли: Обработка боевого клиентского трафика, формирование бэкапов │
 │ - Пользователь исполнения: root │
-│ - 3x-ui сервисы: Web 39284, Sub 39285, Reality 443 │
+│ - 3x-ui сервисы: Web <example>39284</example>, Sub <example>39285</example>, Reality 443 │
 │ - Исходящий шлюз: wireproxy SOCKS5 (127.0.0.1:40000) │
 │ - Конвейер бэкапа: xui-backup (Systemd Timer: 03:20 UTC +/- 20min) │
 └────────────────────────────────────────────────────────────────────────┘

@@ -16,26 +16,30 @@ import sqlite3
 import subprocess
 import sys
 import tarfile
-import tempfile
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent
 PACKAGE = ROOT / "secondary-node" / "xui_standby_sync"
 sys.path.insert(0, str(PACKAGE.parent))
 
-from xui_standby_sync.models import (  # noqa: E402
-    NotificationConfig, PathsConfig, RuntimeConfig, RuntimeOptions,
-    SecurityConfig, SyncPolicy,
+from xui_standby_sync.models import (
+    NotificationConfig,
+    PathsConfig,
+    RuntimeConfig,
+    RuntimeOptions,
+    SecurityConfig,
+    SyncPolicy,
 )
-from xui_standby_sync.workflow import run_sync  # noqa: E402
+from xui_standby_sync.workflow import run_sync
 
 
 class LocalLock:
     def __init__(self, *_args: object, **_kwargs: object) -> None: pass
-    def __enter__(self) -> "LocalLock": return self
+    def __enter__(self) -> LocalLock: # noqa: PYI034
+        return self
     def __exit__(self, *_args: object) -> None: pass
 
 
