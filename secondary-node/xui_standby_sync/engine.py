@@ -256,7 +256,8 @@ def apply_database_sync_plan(
             raise PlanExecutionError("Host invariants changed during database merge")
         connection.execute("COMMIT;")
     except BaseException:
-        connection.execute("ROLLBACK;")
+        if connection.in_transaction:
+            connection.execute("ROLLBACK;")
         raise
     finally:
         connection.close()

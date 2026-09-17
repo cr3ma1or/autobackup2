@@ -70,7 +70,7 @@ export GNUPGHOME="$GNUPG_DIR"
 export SCRIPT_VERSION
 
 readonly REQUIRED_COMMANDS=(
-  basename cat chmod date find flock gpg gpgconf install mkdir mktemp mv
+  basename cat chmod date find flock gpg gpgconf grep install mkdir mktemp mv
   python3 rm sha256sum sleep sort sqlite3 stat systemctl tar timeout
 )
 
@@ -84,6 +84,7 @@ ROLLBACK_DB=""
 ARCHIVE=""
 HASH_FILE=""
 SELECT_ARG=""
+TRUSTED_BACKUP_SIGNER_FINGERPRINT=""
 
 prepare_log_file() {
   if [[ -L "$LOG_FILE" ]]; then
@@ -356,7 +357,27 @@ validate() {
       log_error 'Небезопасные права .env: ожидается root:root:600.'
       exit 1
     }
+  else
+    log_error ".env отсутствует: $ENV_FILE"
+    exit 1
   fi
+
+  local line value found=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == PRIMARY_LOCAL_RECIPIENT=* ]] || continue
+    ((found == 0)) || { log_error 'PRIMARY_LOCAL_RECIPIENT указан более одного раза.'; exit 1; }
+    value="${line#PRIMARY_LOCAL_RECIPIENT=}"
+    if [[ "$value" =~ ^\"(.*)\"$ || "$value" =~ ^\'(.*)\'$ ]]; then
+      value="${BASH_REMATCH[1]}"
+    fi
+    [[ "$value" =~ ^[0-9A-Fa-f]{40}$ ]] || {
+      log_error 'PRIMARY_LOCAL_RECIPIENT должен быть полным 40-символьным GPG fingerprint.'
+      exit 1
+    }
+    TRUSTED_BACKUP_SIGNER_FINGERPRINT="${value^^}"
+    found=1
+  done < "$ENV_FILE"
+  ((found == 1)) || { log_error 'PRIMARY_LOCAL_RECIPIENT отсутствует в .env.'; exit 1; }
 
   [[ ! -L "$BACKUP_DIR" && -d "$BACKUP_DIR" ]] || {
     echo 'Backup-каталог отсутствует, не является каталогом или является symlink.' >&2
@@ -831,6 +852,7 @@ main() {
   log_info 'SHA-256: OK'
   
   local payload="$TEMP_DIR/payload.tar.gz"
+  local gpg_status="$TEMP_DIR/gpg.status"
   local out="$TEMP_DIR/payload"
   local restore_new="$DB_DIR/.x-ui.db.restore.new"
   local owner
@@ -843,8 +865,14 @@ main() {
   mkdir -m 700 "$out"
 
   if ! timeout --foreground "${COMMAND_TIMEOUT_SECONDS}s" \
-      gpg --batch --yes --decrypt --output "$payload" "$ARCHIVE"; then
+      gpg --batch --yes --status-fd 3 3>"$gpg_status" \
+      --decrypt --output "$payload" "$ARCHIVE"; then
     log_error "GPG-дешифрование не выполнено за ${COMMAND_TIMEOUT_SECONDS} секунд или завершилось ошибкой."
+    exit 1
+  fi
+  if ! grep -q '^\[GNUPG:\] GOODSIG ' "$gpg_status" || \
+      ! grep -Fq "[GNUPG:] VALIDSIG ${TRUSTED_BACKUP_SIGNER_FINGERPRINT} " "$gpg_status"; then
+    log_error 'Архив не имеет валидной подписи доверенного primary signer.'
     exit 1
   fi
 

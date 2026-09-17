@@ -59,6 +59,16 @@ critical() {
   exit 2
 }
 
+on_interrupt() {
+  printf 'STATUS=CRITICAL version=%s reason=interrupted signal=INT\n' "$SCRIPT_VERSION"
+  exit 130
+}
+
+on_terminate() {
+  printf 'STATUS=CRITICAL version=%s reason=interrupted signal=TERM\n' "$SCRIPT_VERSION"
+  exit 143
+}
+
 warn() {
   local last_log
   last_log="$(get_last_receiver_log 2>/dev/null || printf 'NONE')"
@@ -82,7 +92,8 @@ on_error() {
   exit 2
 }
 trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
-trap 'critical "reason=interrupted"' INT TERM
+trap on_interrupt INT
+trap on_terminate TERM
 
 parse_backup_timestamp() {
   local archive_base="$1"

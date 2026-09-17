@@ -49,8 +49,9 @@
 - `/opt/xui-backups/` (`0750 root:xbackup`) — корневой каталог хранилища.
 - `/opt/xui-backups/.store.lock` (`0600 xbackup:xbackup`) — общий advisory lock публикации и синхронизации.
 - `/opt/xui-backups/bin/xui-backup-receiver.sh` (`0755 root:root`) — точка входа SSH Forced Command.
-- `/opt/xui-backups/bin/xui-backup-retention.sh` (`0700 root:root`) — скрипт очистки.
-- `/opt/xui-backups/bin/xui-backup-health.sh` (`0700 root:root`) — read-only сенсор SLA.
+- `/opt/xui-backups/bin/xui-backup-retention.sh` (`0755 root:root`) — скрипт очистки; unit запускает его через `/usr/local/bin/xui-backup-retention`.
+- `/etc/x-ui/backup-retention.env` (`0644 root:root`) — несекретная политика retention (`MAX_AGE_DAYS`), читаемая пользователем `xbackup`.
+- `/opt/xui-backups/bin/xui-backup-health.sh` (`0755 root:root`) — read-only сенсор SLA.
 - `/usr/local/bin/xui-backup-health` (`symlink -> /opt/xui-backups/bin/...`).
 - `/opt/xui-backups/incoming/` (`0700 xbackup:xbackup`) — каталог валидных архивов.
 - `/opt/xui-backups/invalid/` (`0700 xbackup:xbackup`) — карантин поврежденных файлов.
@@ -129,7 +130,7 @@ AllowUsers root xbackup@<PRIMARY_IP>
   `OnCalendar=*-*-* 04:45:00 UTC`, `Persistent=true`.
 
 - **Secondary Sync Timer (`/etc/systemd/system/xui-standby-sync.timer`):**
-  `OnCalendar=*-*-* 00/2:00:00`, `RandomizedDelaySec=300`, `Persistent=true`.
+  `OnCalendar=*-*-* 04,16:00:00 UTC`, `RandomizedDelaySec=15min`, `Persistent=true`.
 
 ## 6. CLI Standby
 
@@ -138,4 +139,4 @@ AllowUsers root xbackup@<PRIMARY_IP>
 - `xui-standby plan --json` — read-only план слияния.
 - `xui-standby sync --dry-run --json` — безопасная проверка без изменений.
 - `xui-standby sync --json` — запуск управляемой репликации.
-- `xui-standby rollback --latest --yes` — откат по последнему снапшоту.
+- `xui-standby rollback --run-id <UTC_TIMESTAMP-UUID> --yes` — откат по конкретному снимку; альтернативно `--snapshot <path> --yes`.

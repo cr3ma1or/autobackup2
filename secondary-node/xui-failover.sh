@@ -425,6 +425,7 @@ promote_command() {
   create_failover_guard
   acquire_sync_exclusion
   systemctl stop "$SYNC_TIMER"
+  systemctl stop xui-standby-sync.service
   flush_transit_chain
   save_firewall
   write_mode PROMOTED
@@ -434,7 +435,7 @@ promote_command() {
   send_telegram "🚨 #PROMOTED: Secondary node is ACTIVE
 Host: $(hostname -f 2>/dev/null || hostname)
 Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-  log INFO "node promoted successfully"
+  log INFO "node promoted; local backup timer enabled"
 }
 
 confirm_standby() {

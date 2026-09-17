@@ -102,7 +102,6 @@ def run_sync(
     rollback_attempted = False
     rollback_succeeded: bool | None = None
     mutation_started = False
-    mutation_committed = False
     plan: SyncRunPlan | None = None
     backup: BackupMetadata | None = None
     snapshot = None
@@ -182,7 +181,6 @@ def run_sync(
                         plan=authoritative_plan,
                         is_cancelled=is_cancelled,
                     )
-                    mutation_committed = True
                     ensure_not_cancelled()
                     verify_integrity(config.paths.target_db)
                     if isinstance(invariant_keys, list):
@@ -193,11 +191,7 @@ def run_sync(
                         verify_invariants(config.paths.target_db, invariant_keys)
                 except BaseException as error:
                     lifecycle_error = error
-                    if (
-                        mutation_started
-                        and not mutation_committed
-                        and snapshot is not None
-                    ):
+                    if mutation_started and snapshot is not None:
                         rollback_attempted = True
                         try:
                             restore_rollback_snapshot(
@@ -208,16 +202,10 @@ def run_sync(
                         except BaseException as rollback_error:
                             rollback_succeeded = False
                             logger.critical(
-                                "Rollback failed after transaction failure: %s",
+                                "Rollback failed after synchronization failure: %s",
                                 rollback_error,
                                 exc_info=True,
                             )
-                    elif mutation_committed:
-                        logger.critical(
-                            "Post-commit synchronization failure; database rollback "
-                            "is intentionally suppressed",
-                            exc_info=True,
-                        )
                 finally:
                     if service_start_required:
                         try:

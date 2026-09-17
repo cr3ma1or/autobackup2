@@ -45,7 +45,7 @@ readonly INCOMING_DIR="/opt/xui-backups/incoming"
 readonly INVALID_DIR="/opt/xui-backups/invalid"
 readonly LOG_FILE="/opt/xui-backups/receiver.log"
 readonly LOCK_FILE="/opt/xui-backups/.store.lock"
-readonly CONFIG_FILE="/etc/x-ui/sync.env"
+readonly CONFIG_FILE="/etc/x-ui/backup-retention.env"
 readonly LOCK_WAIT_SECONDS=7200
 # Retention constraints
 readonly KEEP_MIN_ARCHIVES=3

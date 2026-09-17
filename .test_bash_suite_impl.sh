@@ -115,8 +115,23 @@ EOF
 set -Eeuo pipefail
 if [[ " $* " == *' --decrypt '* ]]; then
   output=''; input=''
-  while (($#)); do case "$1" in --output) output="$2"; shift 2;; *) input="$1"; shift;; esac; done
-  cp -- "$input" "$output"; exit 0
+  while (($#)); do
+    case "$1" in
+      --status-fd)
+        status_fd="$2"; shift 2
+        ;;
+      --output)
+        output="$2"; shift 2
+        ;;
+      *)
+        input="$1"; shift
+        ;;
+    esac
+  done
+  cp -- "$input" "$output"
+  printf '[GNUPG:] GOODSIG 0123456789012345678901234567890123456789 test-signer\n' >&"$status_fd"
+  printf '[GNUPG:] VALIDSIG 0123456789012345678901234567890123456789 20260917 0 4 0 1 10 00 0123456789012345678901234567890123456789\n' >&"$status_fd"
+  exit 0
 fi
 exit 0
 EOF

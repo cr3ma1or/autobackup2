@@ -232,9 +232,14 @@ install_file() {
 
 write_unit() {
   local name="$1" body="$2"
-  local dst="${SYSTEMD_DIR}/${name}"
-  printf '%s' "$body" >"$dst"
-  chmod 0644 "$dst"
+  local dst="${SYSTEMD_DIR}/${name}" temp
+  [[ "$name" =~ ^[A-Za-z0-9_.@-]+\.(service|timer)$ ]] || die "Invalid systemd unit name: $name"
+  [[ ! -e "$dst" || ! -L "$dst" ]] || die "Refusing symlink systemd unit: $dst"
+  temp="$(mktemp "${SYSTEMD_DIR}/.${name}.XXXXXX")"
+  printf '%s' "$body" >"$temp"
+  chown root:root "$temp"
+  chmod 0644 "$temp"
+  mv -f -- "$temp" "$dst"
   info "Wrote systemd unit: $dst"
 }
 
@@ -439,10 +444,23 @@ initialize_secondary_nat() {
         mappings=()
         break
       fi
+      external_port="${pair%%:*}"
+      internal_port="${pair##*:}"
+      if ((10#$external_port < 1 || 10#$external_port > 65535 ||
+          10#$internal_port < 1 || 10#$internal_port > 65535)); then
+        warn "Out-of-range TRANSIT_PORT_MAP entry '$pair'; creating an empty $chain chain"
+        mappings=()
+        break
+      fi
     done
   fi
 
   command -v iptables >/dev/null 2>&1 || { warn "iptables not found; skipping DNAT initialization"; return 0; }
+
+  if ((${#mappings[@]} > 0)) && [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null || true)" != 1 ]]; then
+    warn "net.ipv4.ip_forward is not enabled; creating an empty $chain chain"
+    mappings=()
+  fi
 
   if iptables -w -t nat -nL "$chain" >/dev/null 2>&1; then
     info "iptables chain $chain already exists; preserving its rules"
@@ -592,14 +610,13 @@ install_primary() {
         local keyscan_output
         keyscan_output="$(ssh-keyscan -H "$secondary_host" 2>/dev/null || true)"
         if [[ -n "$keyscan_output" ]]; then
-          printf '%s\n' "$keyscan_output" >>"$PRIMARY_KNOWN_HOSTS"
-          chmod 0600 "$PRIMARY_KNOWN_HOSTS"
-          set_env_value "$PRIMARY_TRANSFER_ENV_FILE" TRANSFER_ENABLED 1
+          warn "Verify this SSH host-key fingerprint through an independent channel before pinning:"
+          printf '%s\n' "$keyscan_output" | ssh-keygen -lf -
+          warn "TRANSFER_ENABLED remains 0 until a verified known_hosts entry is installed manually."
           set_env_value "$PRIMARY_TRANSFER_ENV_FILE" TRANSFER_HOST "$secondary_host"
           set_env_value "$PRIMARY_TRANSFER_ENV_FILE" TRANSFER_USER "$SB_USER"
           set_env_value "$PRIMARY_TRANSFER_ENV_FILE" TRANSFER_KEY "$PRIMARY_SSH_KEY"
           set_env_value "$PRIMARY_TRANSFER_ENV_FILE" TRANSFER_KNOWN_HOSTS "$PRIMARY_KNOWN_HOSTS"
-          info "Pinned $secondary_host into $PRIMARY_KNOWN_HOSTS and enabled TRANSFER_ENABLED=1"
         else
           warn "ssh-keyscan returned no keys for $secondary_host; leave TRANSFER_ENABLED=0"
         fi
@@ -775,6 +792,12 @@ PY
     install_file "$repo_secondary/examples/sync.env.example" "$SB_SYNC_ENV_FILE" 0600 root:root
   else
     info "Preserving existing $SB_SYNC_ENV_FILE"
+  fi
+  local retention_env_file="/etc/x-ui/backup-retention.env"
+  if [[ ! -f "$retention_env_file" ]]; then
+    install_file "$repo_secondary/examples/backup-retention.env.example" "$retention_env_file" 0644 root:root
+  else
+    info "Preserving existing $retention_env_file"
   fi
   prompt_tg_config "$SB_SYNC_ENV_FILE"
   local primary_ip="" standby_ip="" signer_fp=""

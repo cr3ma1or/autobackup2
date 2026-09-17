@@ -1276,6 +1276,7 @@ main() {
   gzip -n -6 -c "$tarfile" >"$gzipfile"
 
   gpg --batch --yes --trust-model always \
+    --cipher-algo AES256 \
     -r "$PRIMARY_LOCAL_RECIPIENT" -r "$SECONDARY_SYNC_RECIPIENT" \
     --sign --encrypt --output "$part" "$gzipfile"
 
