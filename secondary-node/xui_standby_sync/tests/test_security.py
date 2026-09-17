@@ -99,10 +99,11 @@ class TestDirectorySecurityValidation:
                 "st_uid": 0,
             })()
 
-        with patch("pathlib.Path.lstat", side_effect=side_effect):
-            
-            with pytest.raises(SecurityViolationError, match="Writable parent directory"):
-                verify_directory_chain(test_dir, "test directory")
+        with (
+            patch("pathlib.Path.lstat", side_effect=side_effect),
+            pytest.raises(SecurityViolationError, match="Writable parent directory"),
+        ):
+            verify_directory_chain(test_dir, "test directory")
 
     def test_accept_secure_directory_chain(self, tmp_path: Path):
         """Accept secure directory chain."""

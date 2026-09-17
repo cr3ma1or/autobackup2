@@ -303,7 +303,7 @@ class TestPlannerSecondaryInbounds:
              "settings": _BASE_SETTINGS, "stream_settings": _BASE_STREAM},
         ])
 
-        with pytest.raises(PlanValidationError, match="[Aa]mbiguous"):
+        with pytest.raises(PlanValidationError, match=r"[Aa]mbiguous"):
             build_database_sync_plan(
                 source_db=source, target_db=target,
                 allowlist=_allowlist(), reserved_ports=frozenset(),
@@ -542,7 +542,7 @@ class TestPlannerXrayTemplate:
             {"key": "xrayTemplateConfig", "value": "{}"}
         ])
 
-        with pytest.raises(PlanValidationError, match="[Mm]alformed JSON"):
+        with pytest.raises(PlanValidationError, match=r"[Mm]alformed JSON"):
             build_database_sync_plan(
                 source_db=source, target_db=target,
                 allowlist=_allowlist(), reserved_ports=frozenset(),

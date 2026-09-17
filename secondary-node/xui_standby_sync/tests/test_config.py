@@ -51,15 +51,15 @@ class TestCustomReservedPortsParsing:
 
     def test_port_out_of_range_raises_error(self):
         """Port outside 1..65535 raises ConfigurationError."""
-        with pytest.raises(ConfigurationError, match="outside 1..65535"):
+        with pytest.raises(ConfigurationError, match=r"outside 1\.\.65535"):
             parse_custom_reserved_ports("0")
         
-        with pytest.raises(ConfigurationError, match="outside 1..65535"):
+        with pytest.raises(ConfigurationError, match=r"outside 1\.\.65535"):
             parse_custom_reserved_ports("65536")
 
     def test_negative_port_raises_error(self):
         """Negative port raises ConfigurationError."""
-        with pytest.raises(ConfigurationError, match="outside 1..65535"):
+        with pytest.raises(ConfigurationError, match=r"outside 1\.\.65535"):
             parse_custom_reserved_ports("-1")
 
 

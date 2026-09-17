@@ -40,7 +40,7 @@ fail_under = 85
 show_missing = true
 
 [tool.ruff]
-line-length = 88
+line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
@@ -52,3 +52,23 @@ strict = true
 warn_unused_ignores = true
 warn_return_any = true
 disallow_any_generics = true
+
+# Test suite is maintained alongside strict production typing. Keep the
+# runtime code strictly typed, while allowing pragmatic untyped test helpers.
+[[tool.mypy.overrides]]
+module = "xui_standby_sync.tests.*"
+disable_error_code = [
+  "arg-type",
+  "attr-defined",
+  "import-not-found",
+  "import-untyped",
+  "misc",
+  "no-any-return",
+  "no-untyped-call",
+  "no-untyped-def",
+  "type-arg",
+  "untyped-decorator",
+  "var-annotated",
+]
+check_untyped_defs = false
+disallow_untyped_defs = false

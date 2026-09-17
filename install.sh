@@ -10,8 +10,9 @@
 #   primary   - installs xui-backup + xui-restore, systemd timer, logrotate,
 #               local GPG keyring and off-site SSH transfer scaffolding.
 #   secondary - installs xui-backup-receiver (SSH forced command), retention,
-#               health probe, python sync engine (venv), systemd units,
-#               logrotate, allowlist and sync.env scaffolding.
+#               health probe, autonomous backup/restore and failover tooling,
+#               python sync engine (venv), systemd units, logrotate, allowlist
+#               and sync.env scaffolding.
 #
 # Usage:
 #   ./install.sh                      # auto-detect role
@@ -294,7 +295,7 @@ install_common() {
   local -a common=()
   case "$PKG_MANAGER" in
     apt-get)
-      common=(bash tar gzip gpg gpg-agent coreutils findutils util-linux gnupg sqlite3 curl python3 python3-venv python3-pip openssh-client)
+      common=(bash tar gzip gpg gpg-agent coreutils findutils util-linux gnupg sqlite3 curl python3 python3-venv python3-pip openssh-client iptables iptables-persistent)
       ;;
     dnf|yum)
       common=(bash tar gzip gnupg2 coreutils findutils util-linux sqlite curl python3 python3-pip openssh-clients)
@@ -373,22 +374,79 @@ prompt_tg_config() {
     set_env_value "$env_file" SEND_TELEGRAM 0
     return 0
   fi
-  token="$(ask "Telegram bot token")"
-  chat_id="$(ask "Telegram chat ID")"
-  if [[ ! "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
-    warn "Invalid TG_BOT_TOKEN; leaving SEND_TELEGRAM=0. Edit $env_file later."
-    set_env_value "$env_file" SEND_TELEGRAM 0
-    return 0
-  fi
-  if [[ ! "$chat_id" =~ ^-?[0-9]+$ ]]; then
-    warn "Invalid TG_CHAT_ID; leaving SEND_TELEGRAM=0. Edit $env_file later."
-    set_env_value "$env_file" SEND_TELEGRAM 0
-    return 0
-  fi
+  printf '%s\n' \
+    '1) Откройте @BotFather в Telegram -> отправьте /newbot -> скопируйте HTTP API Token.' \
+    '2) Нажмите Start в созданном боте.' \
+    '3) Откройте @userinfobot -> скопируйте числовой Id (для групп укажите ID с минусом).' >&2
+  while :; do
+    token="$(ask "Telegram bot token")"
+    if [[ "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+      break
+    fi
+    warn "Invalid TG_BOT_TOKEN format; expected <digits>:<letters/digits/_/->. Try again."
+  done
+  while :; do
+    chat_id="$(ask "Telegram chat ID")"
+    if [[ "$chat_id" =~ ^-?[0-9]+$ ]]; then
+      break
+    fi
+    warn "Invalid TG_CHAT_ID format; expected a numeric ID (negative for groups). Try again."
+  done
   set_env_value "$env_file" SEND_TELEGRAM 1
   set_env_value "$env_file" TG_BOT_TOKEN "$token"
   set_env_value "$env_file" TG_CHAT_ID "$chat_id"
   info "Telegram configured in $env_file"
+}
+
+validate_ipv4() {
+  local address="$1" octet
+  local -a octets
+  [[ "$address" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || return 1
+  IFS='.' read -r -a octets <<<"$address"
+  ((${#octets[@]} == 4)) || return 1
+  for octet in "${octets[@]}"; do
+    [[ "$octet" =~ ^(0|[1-9][0-9]{0,2})$ ]] || return 1
+    ((10#$octet <= 255)) || return 1
+  done
+}
+
+initialize_secondary_nat() {
+  local primary_ip="$1" chain="XUI_TRANSIT_DNAT" rules_dir="/etc/iptables"
+  local rules_file="${rules_dir}/rules.v4" temp_file pair external_port internal_port
+  local -a mappings=("2096:39285" "443:443" "53810:39284")
+
+  [[ -n "$primary_ip" ]] || { warn "PRIMARY_IP is empty; skipping iptables DNAT initialization"; return 0; }
+  validate_ipv4 "$primary_ip" || { warn "PRIMARY_IP is invalid; skipping iptables DNAT initialization"; return 0; }
+  command -v iptables >/dev/null 2>&1 || { warn "iptables not found; skipping DNAT initialization"; return 0; }
+
+  if iptables -w -t nat -nL "$chain" >/dev/null 2>&1; then
+    info "iptables chain $chain already exists; preserving its rules"
+    return 0
+  fi
+
+  info "Creating iptables chain $chain for Primary $primary_ip"
+  iptables -w -t nat -N "$chain"
+  iptables -w -t nat -C PREROUTING -j "$chain" 2>/dev/null || \
+    iptables -w -t nat -I PREROUTING 1 -j "$chain"
+  for pair in "${mappings[@]}"; do
+    external_port="${pair%%:*}"
+    internal_port="${pair##*:}"
+    iptables -w -t nat -A "$chain" -p tcp --dport "$external_port" \
+      -j DNAT --to-destination "${primary_ip}:${internal_port}"
+  done
+  iptables -w -t nat -C POSTROUTING -m conntrack --ctstate DNAT -d "$primary_ip" -j MASQUERADE 2>/dev/null || \
+    iptables -w -t nat -A POSTROUTING -m conntrack --ctstate DNAT -d "$primary_ip" -j MASQUERADE
+
+  if command -v netfilter-persistent >/dev/null 2>&1; then
+    netfilter-persistent save
+  else
+    command -v iptables-save >/dev/null 2>&1 || die "iptables-save is required to persist firewall rules"
+    ensure_dir "$rules_dir" root:root 0700
+    temp_file="$(mktemp "${rules_dir}/.rules.v4.XXXXXX")"
+    iptables-save >"$temp_file"
+    chmod 0600 "$temp_file"
+    mv -f -- "$temp_file" "$rules_file"
+  fi
 }
 
 gpg_first_fingerprint() {
@@ -640,9 +698,17 @@ PY
   # -- Bash scripts ---------------------------------------------------------------
   local repo_secondary="${REPO_ROOT}/secondary-node"
   [[ -d "$repo_secondary" ]] || die "Cannot find secondary-node/ in repo root: $REPO_ROOT"
+  [[ -f "${REPO_ROOT}/primary-node/xui-backup.sh" ]] || die "Cannot find primary-node/xui-backup.sh in repo root: $REPO_ROOT"
+  [[ -f "${REPO_ROOT}/primary-node/xui-restore.sh" ]] || die "Cannot find primary-node/xui-restore.sh in repo root: $REPO_ROOT"
   install_file "$repo_secondary/xui-backup-receiver.sh"   "${SB_BIN_DIR}/xui-backup-receiver.sh"   0755 root:root
   install_file "$repo_secondary/xui-backup-retention.sh"  "${SB_BIN_DIR}/xui-backup-retention.sh"  0755 root:root
   install_file "$repo_secondary/xui-backup-health.sh"     "${SB_BIN_DIR}/xui-backup-health.sh"     0755 root:root
+  install_file "${REPO_ROOT}/primary-node/xui-backup.sh"  "${PRIMARY_BIN_DIR}/xui-backup"  0700 root:root
+  install_file "${REPO_ROOT}/primary-node/xui-restore.sh" "${PRIMARY_BIN_DIR}/xui-restore" 0700 root:root
+  install_file "$repo_secondary/xui-failover.sh" "${PRIMARY_BIN_DIR}/xui-failover" 0755 root:root
+
+  ensure_dir "$PRIMARY_BACKUP_DIR" root:root 0700
+  ensure_dir "${PRIMARY_BACKUP_DIR}/.work" root:root 0700
 
   ln -sf "${SB_BIN_DIR}/xui-backup-health.sh" "${PRIMARY_BIN_DIR}/xui-backup-health"
   ln -sf "${SB_BIN_DIR}/xui-backup-retention.sh" "${PRIMARY_BIN_DIR}/xui-backup-retention"
@@ -674,8 +740,8 @@ PY
     info "Preserving existing $SB_SYNC_ENV_FILE"
   fi
   prompt_tg_config "$SB_SYNC_ENV_FILE"
+  local primary_ip="" standby_ip="" signer_fp=""
   if (( UNATTENDED == 0 )); then
-    local primary_ip standby_ip signer_fp
     primary_ip="$(ask "Primary node IP (for stream_settings rewrite, empty to skip)")"
     standby_ip="$(ask "This standby node IP (empty to skip)")"
     signer_fp="$(ask "Trusted primary GPG signer fingerprint (40 hex chars)")"
@@ -689,6 +755,7 @@ PY
   else
     warn "Set TRUSTED_GPG_SIGNER_FINGERPRINTS and PRIMARY_IP/STANDBY_IP in $SB_SYNC_ENV_FILE"
   fi
+  initialize_secondary_nat "$primary_ip"
 
   ensure_dir "$SB_GNUPG_DIR" root:root 0700
   if ! gpg --homedir "$SB_GNUPG_DIR" --batch --list-secret-keys >/dev/null 2>&1; then
@@ -755,12 +822,48 @@ EOF
       write_unit "xui-standby-sync.timer" "$(
 cat <<EOF
 [Unit]
-Description=Run 3x-ui standby sync every 2 hours
+    Description=Run 3x-ui standby sync every 12 hours
 Requires=xui-standby-sync.service
 
 [Timer]
-OnCalendar=*-*-* 00/2:00:00 UTC
-RandomizedDelaySec=300
+    OnCalendar=*-*-* 04,16:00:00 UTC
+    RandomizedDelaySec=15min
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+)"
+  write_unit "xui-backup.service" "$(
+cat <<EOF
+[Unit]
+Description=3x-ui Encrypted SQLite Backup (Disaster Recovery)
+Wants=xui-backup.timer
+
+[Service]
+Type=oneshot
+ExecStart=${PRIMARY_BIN_DIR}/xui-backup
+Nice=19
+IOSchedulingClass=idle
+RuntimeDirectory=xui-backup
+ProtectSystem=strict
+ReadWritePaths=${PRIMARY_BACKUP_DIR} /run/xui-backup /var/log
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+)"
+  write_unit "xui-backup.timer" "$(
+cat <<EOF
+[Unit]
+Description=Run 3x-ui backup daily at 03:20 UTC (disabled on standby)
+Requires=xui-backup.service
+
+[Timer]
+OnCalendar=*-*-* 03:20:00 UTC
+RandomizedDelaySec=20min
 Persistent=true
 AccuracySec=1min
 
@@ -802,6 +905,7 @@ WantedBy=timers.target
 EOF
 )"
       systemctl daemon-reload
+      systemctl disable --now xui-backup.timer 2>/dev/null || true
       systemctl enable --now xui-standby-sync.timer xui-backup-retention.timer
       info "Enabled xui-standby-sync.timer and xui-backup-retention.timer"
     fi

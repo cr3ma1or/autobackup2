@@ -54,6 +54,8 @@ sudo systemctl enable --now xui-backup.timer
 systemctl list-timers xui-backup.timer
 ```
 
+На Primary резервное копирование запускается ежедневно по расписанию systemd (03:20 UTC с небольшим случайным смещением).
+
 ## Установка Standby
 
 На резервном узле из корня репозитория:
@@ -62,7 +64,7 @@ systemctl list-timers xui-backup.timer
 sudo ./install.sh --role secondary
 ```
 
-Установщик создаёт пользователя `xbackup`, receiver, engine `xui-standby`, файлы systemd, `/etc/x-ui/sync.env`, allowlist и файл `/etc/x-ui/standby-mode` со значением `STANDBY`.
+Установщик создаёт пользователя `xbackup`, receiver, engine `xui-standby`, утилиту `xui-failover`, файлы systemd, `/etc/x-ui/sync.env`, allowlist и файл `/etc/x-ui/standby-mode` со значением `STANDBY`.
 
 Основные настройки `/etc/x-ui/sync.env`:
 
@@ -88,6 +90,10 @@ sudo systemctl enable --now xui-standby-sync.timer xui-backup-retention.timer
 systemctl list-timers xui-standby-sync.timer xui-backup-retention.timer
 ```
 
+Синхронизация выполняется каждые 12 часов — в `04:00` и `16:00 UTC` — со случайным смещением до 15 минут. На Secondary также устанавливается `xui-backup.timer`, но он намеренно оставляется остановленным и отключённым в режиме `STANDBY`; это спящий таймер, который включается только после `sudo xui-failover promote`.
+
+Интерактивный мастер Telegram запускается для каждой роли при обычной установке. Он предлагает включить уведомления, затем пошагово просит токен бота и числовой Chat ID (для групп — ID с минусом), проверяя формат каждого значения и повторяя запрос при ошибке. Токен получают через `@BotFather`, а Chat ID — через `@userinfobot` или настройки группы. В режиме `--unattended` запросы пропускаются: значения нужно безопасно заполнить позже в соответствующем env-файле.
+
 ## Unattended-режим
 
 Для автоматизированного развертывания используйте явную роль:
@@ -106,5 +112,6 @@ sudo ./install.sh --role secondary --unattended
 - Ручная синхронизация: `sudo xui-standby sync --json`.
 - Проверка определённого архива: `sudo xui-standby check-backup --backup /opt/xui-backups/incoming/<archive>.gpg`.
 - Логи: `journalctl -u xui-standby-sync.service -f`, `journalctl -u xui-backup.service -f`.
+- Аварийное переключение: `sudo xui-failover status`, `sudo xui-failover promote`, `sudo xui-failover standby`.
 
 Не переводите Standby в `PROMOTED` во время запуска репликации. В режиме, отличном от `STANDBY`, синхронизация блокируется, чтобы предотвратить split-brain.

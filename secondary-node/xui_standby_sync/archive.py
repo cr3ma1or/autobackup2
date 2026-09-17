@@ -152,6 +152,10 @@ def _extract_worker(
                         self.remaining if size < 0 else min(size, self.remaining)
                     )
                     chunk = self.source.read(requested)
+                    if not isinstance(chunk, bytes):
+                        raise ArchiveValidationError(
+                            "Archive member reader returned non-bytes data"
+                        )
                     self.copied += len(chunk)
                     self.remaining -= len(chunk)
                     return chunk

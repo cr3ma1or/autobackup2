@@ -370,7 +370,6 @@ class TestInvariantSnapshot:
         os.chmod(db_path, 0o600)
         
         # Baseline
-        baseline = {"webPort": "2053"}
         
         # Simulate changed value
         with sqlite3.connect(str(db_path)) as conn:

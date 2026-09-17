@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 from pathlib import Path
@@ -218,7 +219,7 @@ class TestEngineRejection:
     def test_invalid_plan_rejected_before_transaction(self, tmp_path: Path):
         path = tmp_path / "target.db"
         _create_target_db(path)
-        fp = _get_fingerprint(path)
+        _get_fingerprint(path)
 
         plan = _empty_plan(path, validation_errors=("some error",))
 
@@ -280,10 +281,8 @@ class TestEngineRollback:
 
         # We don't expect rollback to raise here — engine handles it internally
         # and re-raises the original error
-        try:
+        with contextlib.suppress(Exception):
             apply_database_sync_plan(target_db=path, plan=plan)
-        except Exception:
-            pass
 
         conn = sqlite3.connect(str(path))
         new_ib = conn.execute("SELECT id FROM inbounds WHERE tag='fail_after'").fetchone()
@@ -322,10 +321,8 @@ class TestEngineRollback:
             xray_template_json=None,
         )
 
-        try:
+        with contextlib.suppress(Exception):
             apply_database_sync_plan(target_db=path, plan=plan)
-        except Exception:
-            pass
 
         conn = sqlite3.connect(str(path))
         row = conn.execute("SELECT id FROM clients WHERE uuid='keep-me'").fetchone()

@@ -27,7 +27,12 @@ def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
 
 def _host_invariant_snapshot(connection: sqlite3.Connection) -> dict[str, str]:
     rows = connection.execute("SELECT key, value FROM settings;").fetchall()
-    return {str(row["key"]): str(row["value"]) for row in rows if row["key"] in _HOST_INVARIANTS or str(row["key"]).endswith(("CertFile", "KeyFile"))}
+    return {
+        str(row["key"]): str(row["value"])
+        for row in rows
+        if row["key"] in _HOST_INVARIANTS
+        or str(row["key"]).endswith(("CertFile", "KeyFile"))
+    }
 
 
 def _assert_inbound_one_protected(inbound_id: int) -> None:
@@ -47,7 +52,9 @@ def _assert_dual_layer(connection: sqlite3.Connection, inbound_ids: set[int]) ->
         clients = clients_json.get("clients") if isinstance(clients_json, dict) else None
         if not isinstance(clients, list):
             raise PlanExecutionError(f"Inbound {inbound_id} settings lacks clients array")
-        relational = connection.execute("SELECT uuid, email FROM clients WHERE inbound_id = ?;", (inbound_id,)).fetchall()
+        relational = connection.execute(
+            "SELECT uuid, email FROM clients WHERE inbound_id = ?;", (inbound_id,)
+        ).fetchall()
         if len(clients) != len(relational):
             raise PlanExecutionError(f"Inbound {inbound_id} clients JSON is inconsistent with relational clients")
         identities = {(str(row["uuid"]), str(row["email"])) for row in relational}
@@ -190,24 +197,42 @@ def apply_database_sync_plan(
 
         for inbound_delete_op in plan.inbound_deletes:
             _assert_inbound_one_protected(inbound_delete_op.target_inbound_id)
-            connection.execute("DELETE FROM clients WHERE inbound_id = ?;", (inbound_delete_op.target_inbound_id,))
-            connection.execute("DELETE FROM client_traffics WHERE inbound_id = ?;", (inbound_delete_op.target_inbound_id,))
-            cursor = connection.execute("DELETE FROM inbounds WHERE id = ?;", (inbound_delete_op.target_inbound_id,))
+            connection.execute(
+                "DELETE FROM clients WHERE inbound_id = ?;",
+                (inbound_delete_op.target_inbound_id,),
+            )
+            connection.execute(
+                "DELETE FROM client_traffics WHERE inbound_id = ?;",
+                (inbound_delete_op.target_inbound_id,),
+            )
+            cursor = connection.execute(
+                "DELETE FROM inbounds WHERE id = ?;",
+                (inbound_delete_op.target_inbound_id,),
+            )
             if cursor.rowcount == 0:
                 raise PlanExecutionError(f"Target inbound {inbound_delete_op.target_inbound_id} not found")
             _ensure_not_cancelled(is_cancelled)
 
         for setting_op in plan.settings_updates:
             if setting_op.target_setting_id is None:
-                connection.execute("INSERT INTO settings (key, value) VALUES (?, ?);", (setting_op.key, setting_op.value))
+                connection.execute(
+                    "INSERT INTO settings (key, value) VALUES (?, ?);",
+                    (setting_op.key, setting_op.value),
+                )
             else:
-                cursor = connection.execute("UPDATE settings SET value = ? WHERE id = ?;", (setting_op.value, setting_op.target_setting_id))
+                cursor = connection.execute(
+                    "UPDATE settings SET value = ? WHERE id = ?;",
+                    (setting_op.value, setting_op.target_setting_id),
+                )
                 if cursor.rowcount == 0:
                     raise PlanExecutionError(f"Target setting {setting_op.target_setting_id} not found")
             _ensure_not_cancelled(is_cancelled)
 
         if plan.xray_template_json is not None:
-            cursor = connection.execute("UPDATE settings SET value = ? WHERE key = 'xrayTemplateConfig';", (plan.xray_template_json,))
+            cursor = connection.execute(
+                "UPDATE settings SET value = ? WHERE key = 'xrayTemplateConfig';",
+                (plan.xray_template_json,),
+            )
             if cursor.rowcount == 0:
                 raise PlanExecutionError("xrayTemplateConfig setting not found")
         _assert_dual_layer(connection, touched_inbounds)

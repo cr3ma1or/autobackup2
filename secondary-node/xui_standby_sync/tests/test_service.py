@@ -35,7 +35,7 @@ class TestStartService:
             start_service("x-ui", 30)
 
     def test_start_raises_if_never_active(self):
-        never_active = MagicMock(returncode=1)
+        MagicMock(returncode=1)
         with (
             patch("xui_standby_sync.service.run_command") as mock_run,
             patch("xui_standby_sync.service.time") as mock_time,

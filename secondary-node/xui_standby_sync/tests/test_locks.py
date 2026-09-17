@@ -38,9 +38,8 @@ class TestLockBasicFunctionality:
         with first_lock:
             # Store lock is acquired first, so second attempt should fail
             second_lock = LockSet(sync_lock, store_lock)
-            with pytest.raises(LockBusyError, match="Lock is busy"):
-                with second_lock:
-                    pass
+            with pytest.raises(LockBusyError, match="Lock is busy"), second_lock:
+                pass
 
     def test_self_lock_is_released_after_store_lock_failure(self, tmp_path: Path):
         """Self lock is released after store lock failure."""
@@ -86,9 +85,8 @@ class TestLockBasicFunctionality:
         symlink_lock.symlink_to(real_lock)
         
         # This should raise SecurityViolationError when opening lock
-        with pytest.raises(SecurityViolationError):
-            with LockSet(symlink_lock, tmp_path / "store.lock"):
-                pass
+        with pytest.raises(SecurityViolationError), LockSet(symlink_lock, tmp_path / "store.lock"):
+            pass
 
     def test_regular_file_and_secure_permissions(self, tmp_path: Path):
         """Test regular file ownership and permissions."""
@@ -115,7 +113,7 @@ class TestLockBasicFunctionality:
                     return mock_fd
                 return 123
             
-            lock = LockSet(sync_lock, store_lock)
+            LockSet(sync_lock, store_lock)
             # Would raise SecurityViolationError if permissions are wrong
 
     def test_fcntl_import_fallback(self, tmp_path: Path):
@@ -123,11 +121,13 @@ class TestLockBasicFunctionality:
         sync_lock = tmp_path / "sync.lock"
         store_lock = tmp_path / "store.lock"
         
-        with patch.dict("sys.modules", {"fcntl": None}):
-            with pytest.raises(SecurityViolationError, match="fcntl is required"):
-                lock = LockSet(sync_lock, store_lock)
-                with lock:
-                    pass
+        with (
+            patch.dict("sys.modules", {"fcntl": None}),
+            pytest.raises(SecurityViolationError, match="fcntl is required"),
+        ):
+            lock = LockSet(sync_lock, store_lock)
+            with lock:
+                pass
 
 
 class TestStoreLockRetryBehavior:
@@ -230,16 +230,18 @@ class TestLockCleanup:
                 # Store open fails
                 raise LockBusyError("Store lock busy")
             
-        with patch("xui_standby_sync.locks.os.open", side_effect=mock_open):
-            with patch("xui_standby_sync.locks.os.fstat") as mock_fstat:
-                mock_fstat.return_value = type(
-                    "Stat", (), {"st_mode": 0o100600, "st_uid": 0, "st_gid": 0}
-                )()
-                with patch("fcntl.flock"):
-                    lock = LockSet(sync_lock, store_lock, retries=1)
+        with (
+            patch("xui_standby_sync.locks.os.open", side_effect=mock_open),
+            patch("xui_standby_sync.locks.os.fstat") as mock_fstat,
+            patch("fcntl.flock"),
+        ):
+            mock_fstat.return_value = type(
+                "Stat", (), {"st_mode": 0o100600, "st_uid": 0, "st_gid": 0}
+            )()
+            lock = LockSet(sync_lock, store_lock, retries=1)
 
-                    with pytest.raises(LockBusyError), lock:
-                        pass
+            with pytest.raises(LockBusyError), lock:
+                pass
 
         # Cleanup should have been called for sync lock
         assert "sync" in cleanup_verified
@@ -257,15 +259,20 @@ class TestLockCleanup:
                 "fileno": lambda self: 123,
             })()
         
-        with patch("xui_standby_sync.locks.os.open", return_value=123):
-            with patch("xui_standby_sync.locks.os.fdopen", return_value=mock_handle()):
-                with patch("xui_standby_sync.locks.os.fstat", return_value=type(
+        with (
+            patch("xui_standby_sync.locks.os.open", return_value=123),
+            patch("xui_standby_sync.locks.os.fdopen", return_value=mock_handle()),
+            patch(
+                "xui_standby_sync.locks.os.fstat",
+                return_value=type(
                     "Stat", (), {"st_mode": 0o100600, "st_uid": 0, "st_gid": 0}
-                )()):
-                    with patch("fcntl.flock"):
-                        lock = LockSet(sync_lock, store_lock)
-                        with lock:
-                            pass
+                )(),
+            ),
+            patch("fcntl.flock"),
+        ):
+            lock = LockSet(sync_lock, store_lock)
+            with lock:
+                pass
 
         # Cleanup order should be reverse of acquisition (LIFO)
         assert len(close_order) == 2
@@ -278,6 +285,5 @@ class TestLockCleanup:
         symlink_lock = tmp_path / "symlink.lock"
         symlink_lock.symlink_to(real_lock)
         
-        with pytest.raises(SecurityViolationError):
-            with LockSet(symlink_lock, tmp_path / "store.lock"):
-                pass
+        with pytest.raises(SecurityViolationError), LockSet(symlink_lock, tmp_path / "store.lock"):
+            pass

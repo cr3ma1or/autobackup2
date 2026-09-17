@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -51,60 +51,64 @@ class TestCliStatus:
         db_path = tmp_path / "x-ui.db"
         _make_db(db_path)
 
-        with patch("xui_standby_sync.cli.load_values", return_value={}):
-            with patch("xui_standby_sync.cli.build_runtime_config") as mock_config:
-                config = MagicMock()
-                config.paths.target_db = db_path
-                config.paths.standby_mode_file = tmp_path / "standby"
-                config.paths.standby_mode_file.write_text("STANDBY")
-                os.chmod(config.paths.standby_mode_file, 0o600)
-                config.paths.failover_lock_file = tmp_path / "failover"
-                config.paths.sync_lock_path = tmp_path / "sync.lock"
-                config.paths.store_lock_path = tmp_path / "store.lock"
-                config.policy.service_name = "x-ui"
-                mock_config.return_value = config
+        with (
+            patch("xui_standby_sync.cli.load_values", return_value={}),
+            patch("xui_standby_sync.cli.build_runtime_config") as mock_config,
+            patch("xui_standby_sync.cli.collect_status", return_value={}),
+            patch("builtins.print") as mock_print,
+        ):
+            config = MagicMock()
+            config.paths.target_db = db_path
+            config.paths.standby_mode_file = tmp_path / "standby"
+            config.paths.standby_mode_file.write_text("STANDBY")
+            os.chmod(config.paths.standby_mode_file, 0o600)
+            config.paths.failover_lock_file = tmp_path / "failover"
+            config.paths.sync_lock_path = tmp_path / "sync.lock"
+            config.paths.store_lock_path = tmp_path / "store.lock"
+            config.policy.service_name = "x-ui"
+            mock_config.return_value = config
 
-                with patch("xui_standby_sync.cli.collect_status", return_value={}):
-                    with patch("builtins.print") as mock_print:
-                        result = main(["status", "--json"])
-                        
-                        # Check that JSON was printed
-                        assert mock_print.called
-                        output = mock_print.call_args[0][0]
-                        parsed = json.loads(output)
-                        assert isinstance(parsed, dict)
+            main(["status", "--json"])
+
+            # Check that JSON was printed
+            assert mock_print.called
+            output = mock_print.call_args[0][0]
+            parsed = json.loads(output)
+            assert isinstance(parsed, dict)
 
     def test_status_text_output(self, tmp_path: Path):
         """status without --json outputs text."""
         db_path = tmp_path / "x-ui.db"
         _make_db(db_path)
 
-        with patch("xui_standby_sync.cli.load_values", return_value={}):
-            with patch("xui_standby_sync.cli.build_runtime_config") as mock_config:
-                config = MagicMock()
-                config.paths.target_db = db_path
-                config.paths.standby_mode_file = tmp_path / "standby"
-                config.paths.standby_mode_file.write_text("STANDBY")
-                os.chmod(config.paths.standby_mode_file, 0o600)
-                config.paths.failover_lock_file = tmp_path / "failover"
-                config.paths.sync_lock_path = tmp_path / "sync.lock"
-                config.paths.store_lock_path = tmp_path / "store.lock"
-                config.policy.service_name = "x-ui"
-                mock_config.return_value = config
+        with (
+            patch("xui_standby_sync.cli.load_values", return_value={}),
+            patch("xui_standby_sync.cli.build_runtime_config") as mock_config,
+            patch("xui_standby_sync.cli.collect_status", return_value={}),
+            patch("builtins.print") as mock_print,
+        ):
+            config = MagicMock()
+            config.paths.target_db = db_path
+            config.paths.standby_mode_file = tmp_path / "standby"
+            config.paths.standby_mode_file.write_text("STANDBY")
+            os.chmod(config.paths.standby_mode_file, 0o600)
+            config.paths.failover_lock_file = tmp_path / "failover"
+            config.paths.sync_lock_path = tmp_path / "sync.lock"
+            config.paths.store_lock_path = tmp_path / "store.lock"
+            config.policy.service_name = "x-ui"
+            mock_config.return_value = config
 
-                with patch("xui_standby_sync.cli.collect_status", return_value={}):
-                    with patch("builtins.print") as mock_print:
-                        result = main(["status"])
-                        
-                        # Check that text was printed
-                        assert mock_print.called
-                        output = mock_print.call_args[0][0]
-                        # Should not be JSON
-                        try:
-                            json.loads(output)
-                            pytest.fail("Should not be JSON")
-                        except (json.JSONDecodeError, TypeError):
-                            pass  # Expected
+            main(["status"])
+
+            # Check that text was printed
+            assert mock_print.called
+            output = mock_print.call_args[0][0]
+            # Should not be JSON
+            try:
+                json.loads(output)
+                pytest.fail("Should not be JSON")
+            except (json.JSONDecodeError, TypeError):
+                pass  # Expected
 
 
 class TestCliValidate:
@@ -115,29 +119,31 @@ class TestCliValidate:
         db_path = tmp_path / "x-ui.db"
         _make_db(db_path)
 
-        with patch("xui_standby_sync.cli.load_values", return_value={}):
-            with patch("xui_standby_sync.cli.build_runtime_config") as mock_config:
-                config = MagicMock()
-                config.paths.target_db = db_path
-                config.paths.allowlist_path = tmp_path / "allowlist.json"
-                config.paths.allowlist_path.write_text(json.dumps({
-                    "tables": {
-                        "inbounds": {"matching_key": "id", "allowed_columns": ["id"]},
-                        "clients": {"matching_key": "id", "allowed_columns": ["id"]},
-                        "client_traffics": {"matching_key": "id", "allowed_columns": ["id"]},
-                        "settings": {"allowed_keys": ["webPort"]}
-                    }
-                }))
-                os.chmod(config.paths.allowlist_path, 0o600)
-                mock_config.return_value = config
+        with (
+            patch("xui_standby_sync.cli.load_values", return_value={}),
+            patch("xui_standby_sync.cli.build_runtime_config") as mock_config,
+            patch("builtins.print") as mock_print,
+        ):
+            config = MagicMock()
+            config.paths.target_db = db_path
+            config.paths.allowlist_path = tmp_path / "allowlist.json"
+            config.paths.allowlist_path.write_text(json.dumps({
+                "tables": {
+                    "inbounds": {"matching_key": "id", "allowed_columns": ["id"]},
+                    "clients": {"matching_key": "id", "allowed_columns": ["id"]},
+                    "client_traffics": {"matching_key": "id", "allowed_columns": ["id"]},
+                    "settings": {"allowed_keys": ["webPort"]}
+                }
+            }))
+            os.chmod(config.paths.allowlist_path, 0o600)
+            mock_config.return_value = config
 
-                with patch("builtins.print") as mock_print:
-                    result = main(["validate", "--json"])
-                    
-                    assert mock_print.called
-                    output = mock_print.call_args[0][0]
-                    parsed = json.loads(output)
-                    assert parsed.get("valid") is True
+            main(["validate", "--json"])
+
+            assert mock_print.called
+            output = mock_print.call_args[0][0]
+            parsed = json.loads(output)
+            assert parsed.get("valid") is True
 
 
 class TestCliCheckBackup:
@@ -162,23 +168,25 @@ class TestCliCheckBackup:
         sidecar_path.write_text(f"{hash_val}  {backup_name}\n")
         os.chmod(sidecar_path, 0o600)
 
-        with patch("xui_standby_sync.cli.load_values", return_value={}):
-            with patch("xui_standby_sync.cli.build_runtime_config") as mock_config:
-                config = MagicMock()
-                config.paths.incoming_dir = tmp_path
-                config.security.allow_unsafe_backup_path = False
-                config.policy.max_age_seconds = 6 * 3600
-                config.policy.max_clock_skew_seconds = 300
-                config.options.force = False
-                mock_config.return_value = config
+        with (
+            patch("xui_standby_sync.cli.load_values", return_value={}),
+            patch("xui_standby_sync.cli.build_runtime_config") as mock_config,
+            patch("builtins.print") as mock_print,
+        ):
+            config = MagicMock()
+            config.paths.incoming_dir = tmp_path
+            config.security.allow_unsafe_backup_path = False
+            config.policy.max_age_seconds = 6 * 3600
+            config.policy.max_clock_skew_seconds = 300
+            config.options.force = False
+            mock_config.return_value = config
 
-                with patch("builtins.print") as mock_print:
-                    result = main(["check-backup", "--backup", str(backup_path), "--json"])
-                    
-                    assert mock_print.called
-                    output = mock_print.call_args[0][0]
-                    parsed = json.loads(output)
-                    assert parsed.get("valid") is True
+            main(["check-backup", "--backup", str(backup_path), "--json"])
+
+            assert mock_print.called
+            output = mock_print.call_args[0][0]
+            parsed = json.loads(output)
+            assert parsed.get("valid") is True
 
 
 class TestCliRollback:
@@ -202,31 +210,33 @@ class TestCliRollback:
         db_path = tmp_path / "x-ui.db"
         _make_db(db_path)
 
-        with patch("xui_standby_sync.cli.load_values", return_value={}):
-            with patch("xui_standby_sync.cli.build_runtime_config") as mock_config:
-                config = MagicMock()
-                config.paths.target_db = db_path
-                config.paths.standby_mode_file = tmp_path / "standby"
-                config.paths.standby_mode_file.write_text("STANDBY")
-                os.chmod(config.paths.standby_mode_file, 0o600)
-                config.paths.sync_lock_path = tmp_path / "sync.lock"
-                config.paths.store_lock_path = tmp_path / "store.lock"
-                config.policy.service_name = "x-ui"
-                config.policy.command_timeout = 30
-                mock_config.return_value = config
+        with (
+            patch("xui_standby_sync.cli.load_values", return_value={}),
+            patch("xui_standby_sync.cli.build_runtime_config") as mock_config,
+            patch("xui_standby_sync.cli.LockSet"),
+            patch("xui_standby_sync.cli.stop_service"),
+            patch("xui_standby_sync.cli.start_service"),
+            patch("xui_standby_sync.cli.restore_rollback_snapshot"),
+            patch("builtins.print"),
+        ):
+            config = MagicMock()
+            config.paths.target_db = db_path
+            config.paths.standby_mode_file = tmp_path / "standby"
+            config.paths.standby_mode_file.write_text("STANDBY")
+            os.chmod(config.paths.standby_mode_file, 0o600)
+            config.paths.sync_lock_path = tmp_path / "sync.lock"
+            config.paths.store_lock_path = tmp_path / "store.lock"
+            config.policy.service_name = "x-ui"
+            config.policy.command_timeout = 30
+            mock_config.return_value = config
 
-                with patch("xui_standby_sync.cli.LockSet"):
-                    with patch("xui_standby_sync.cli.stop_service"):
-                        with patch("xui_standby_sync.cli.start_service"):
-                            with patch("xui_standby_sync.cli.restore_rollback_snapshot"):
-                                with patch("builtins.print") as mock_print:
-                                    result = main([
-                                        "rollback",
-                                        "--snapshot", str(snapshot_path),
-                                        "--yes"
-                                    ])
+            result = main([
+                "rollback",
+                "--snapshot", str(snapshot_path),
+                "--yes"
+            ])
 
-                                    assert result == 0
+            assert result == 0
 
 class TestCliSyncCommand:
     """Test sync command."""
@@ -237,65 +247,70 @@ class TestCliSyncCommand:
         _make_db(db_path)
         checksum_before = db_path.read_bytes()
 
-        with patch("xui_standby_sync.cli.load_values", return_value={}):
-            with patch("xui_standby_sync.cli.build_runtime_config") as mock_config:
-                config = MagicMock()
-                config.paths.target_db = db_path
-                config.paths.standby_mode_file = tmp_path / "standby"
-                config.paths.standby_mode_file.write_text("STANDBY")
-                os.chmod(config.paths.standby_mode_file, 0o600)
-                config.paths.allowlist_path = tmp_path / "allowlist.json"
-                config.paths.allowlist_path.write_text(json.dumps({
-                    "tables": {
-                        "inbounds": {"matching_key": "tag", "allowed_columns": ["id", "port", "tag", "settings", "stream_settings"]},
-                        "clients": {"matching_key": "uuid", "allowed_columns": ["id"]},
-                        "client_traffics": {"matching_key": "email", "allowed_columns": ["id"]},
-                        "settings": {"allowed_keys": ["webPort"]}
-                    }
-                }))
-                os.chmod(config.paths.allowlist_path, 0o600)
-                config.paths.incoming_dir = tmp_path / "incoming"
-                config.paths.incoming_dir.mkdir()
-                config.paths.work_root = tmp_path / "work"
-                config.paths.work_root.mkdir()
-                config.paths.snapshots_dir = tmp_path / "snapshots"
-                config.paths.snapshots_dir.mkdir()
-                config.paths.gnupg_dir = tmp_path / "gnupg"
-                config.paths.gnupg_dir.mkdir()
-                os.chmod(config.paths.gnupg_dir, 0o700)
-                config.paths.sync_lock_path = tmp_path / "sync.lock"
-                config.paths.store_lock_path = tmp_path / "store.lock"
-                config.paths.failover_lock_file = tmp_path / "failover"
-                config.security.allow_unsafe_backup_path = False
-                config.security.require_gpg_signature = False
-                config.policy.max_age_seconds = 6 * 3600
-                config.policy.max_clock_skew_seconds = 300
-                config.policy.command_timeout = 30
-                config.policy.custom_reserved_ports = frozenset()
-                config.policy.primary_ip = None
-                config.policy.standby_ip = None
-                config.options.dry_run = True
-                config.options.force = False
-                config.options.json_output = False
-                mock_config.return_value = config
+        with (
+            patch("xui_standby_sync.cli.load_values", return_value={}),
+            patch("xui_standby_sync.cli.build_runtime_config") as mock_config,
+            patch("xui_standby_sync.cli.run_sync") as mock_sync,
+        ):
+            config = MagicMock()
+            config.paths.target_db = db_path
+            config.paths.standby_mode_file = tmp_path / "standby"
+            config.paths.standby_mode_file.write_text("STANDBY")
+            os.chmod(config.paths.standby_mode_file, 0o600)
+            config.paths.allowlist_path = tmp_path / "allowlist.json"
+            config.paths.allowlist_path.write_text(json.dumps({
+                "tables": {
+                    "inbounds": {
+                        "matching_key": "tag",
+                        "allowed_columns": ["id", "port", "tag", "settings", "stream_settings"],
+                    },
+                    "clients": {"matching_key": "uuid", "allowed_columns": ["id"]},
+                    "client_traffics": {"matching_key": "email", "allowed_columns": ["id"]},
+                    "settings": {"allowed_keys": ["webPort"]},
+                }
+            }))
+            os.chmod(config.paths.allowlist_path, 0o600)
+            config.paths.incoming_dir = tmp_path / "incoming"
+            config.paths.incoming_dir.mkdir()
+            config.paths.work_root = tmp_path / "work"
+            config.paths.work_root.mkdir()
+            config.paths.snapshots_dir = tmp_path / "snapshots"
+            config.paths.snapshots_dir.mkdir()
+            config.paths.gnupg_dir = tmp_path / "gnupg"
+            config.paths.gnupg_dir.mkdir()
+            os.chmod(config.paths.gnupg_dir, 0o700)
+            config.paths.sync_lock_path = tmp_path / "sync.lock"
+            config.paths.store_lock_path = tmp_path / "store.lock"
+            config.paths.failover_lock_file = tmp_path / "failover"
+            config.security.allow_unsafe_backup_path = False
+            config.security.require_gpg_signature = False
+            config.policy.max_age_seconds = 6 * 3600
+            config.policy.max_clock_skew_seconds = 300
+            config.policy.command_timeout = 30
+            config.policy.custom_reserved_ports = frozenset()
+            config.policy.primary_ip = None
+            config.policy.standby_ip = None
+            config.options.dry_run = True
+            config.options.force = False
+            config.options.json_output = False
+            mock_config.return_value = config
 
-                with patch("xui_standby_sync.cli.run_sync") as mock_sync:
-                    from xui_standby_sync.models import ExecutionResult
-                    mock_sync.return_value = ExecutionResult(
-                        success=True,
-                        run_id="preview",
-                        plan=None,
-                        service_was_stopped=False,
-                        service_restarted=False,
-                        rollback_attempted=False,
-                        rollback_succeeded=None,
-                        error_message=None,
-                        exit_code=0,
-                    )
-                    
-                    result = main(["sync", "--dry-run"])
-                    
-                    assert result == 0
+            from xui_standby_sync.models import ExecutionResult
+            mock_sync.return_value = ExecutionResult(
+                success=True,
+                run_id="preview",
+                plan=None,
+                service_was_stopped=False,
+                service_restarted=False,
+                rollback_attempted=False,
+                rollback_succeeded=None,
+                error_message=None,
+                exit_code=0,
+            )
+
+            result = main(["sync", "--dry-run"])
+
+            assert result == 0
         
         # DB should be unchanged
         assert db_path.read_bytes() == checksum_before

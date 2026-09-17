@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
@@ -338,7 +339,7 @@ class TestTarExtraction:
             mbytes = json.dumps(manifest).encode()
             info.size = len(mbytes)
             tar.addfile(info, io.BytesIO(mbytes))
-        with pytest.raises(ArchiveValidationError, match="exactly one x-ui.db member"):
+        with pytest.raises(ArchiveValidationError, match=r"exactly one x-ui\.db member"):
             _extract_archive(str(payload_path), str(work_dir), 500 * 1024 * 1024, 30)
 
     def test_tar_two_xuidb_members_fails(self, tmp_path: Path):
@@ -351,7 +352,7 @@ class TestTarExtraction:
                 info = tarfile.TarInfo(name=name)
                 info.size = 4
                 tar.addfile(info, __import__("io").BytesIO(b"test"))
-        with pytest.raises(ArchiveValidationError, match="exactly one x-ui.db member"):
+        with pytest.raises(ArchiveValidationError, match=r"exactly one x-ui\.db member"):
             _extract_archive(str(payload_path), str(work_dir), 500 * 1024 * 1024, 30)
 
 
@@ -360,7 +361,6 @@ class TestArchiveTimeout:
 
     def test_archive_worker_timeout_terminates_worker(self, tmp_path: Path):
         """Archive worker timeout terminates worker and returns controlled error."""
-        import time
         work_dir = tmp_path / "work"
         work_dir.mkdir()
 
@@ -374,9 +374,14 @@ class TestArchiveTimeout:
             tar.addfile(info, __import__("io").BytesIO(content))
 
         # Use very short timeout to trigger timeout
-        with patch("xui_standby_sync.archive.shutil.copyfileobj", side_effect=lambda *a, **k: time.sleep(2)):
-            with pytest.raises(ArchiveValidationError, match="timed out"):
-                _extract_archive(str(payload_path), str(work_dir), 500 * 1024 * 1024, timeout=1)
+        with (
+            patch(
+                "xui_standby_sync.archive.shutil.copyfileobj",
+                side_effect=lambda *a, **k: time.sleep(2),
+            ),
+            pytest.raises(ArchiveValidationError, match="timed out"),
+        ):
+            _extract_archive(str(payload_path), str(work_dir), 500 * 1024 * 1024, timeout=1)
 
     def test_worker_crash_no_queue_result_returns_controlled_error(self, tmp_path: Path):
         """Worker crash/no queue result returns controlled error."""
@@ -494,8 +499,8 @@ class TestDecryptAndExtract:
             mock_result.stdout = "[GNUPG:] GOODSIG ABCD1234ABCD1234ABCD1234ABCD1234ABCD1234\n"
             mock_run.return_value = mock_result
             
-            try:
-                result = decrypt_and_extract(
+            with contextlib.suppress(CommandError, ArchiveValidationError):
+                decrypt_and_extract(
                     archive_path=archive_path,
                     work_dir=work_dir,
                     gnupg_dir=gnupg_dir,
@@ -503,8 +508,6 @@ class TestDecryptAndExtract:
                     timeout=10,
                     terminate_gpg_agent=False,
                 )
-            except (CommandError, ArchiveValidationError):
-                pass
         
         # payload.tar.gz should be removed after extraction
         payload_path = work_dir / "payload.tar.gz"
@@ -541,18 +544,18 @@ class TestDecryptAndExtract:
             mock_result.stdout = ""
             return mock_result
         
-        with patch("xui_standby_sync.security.run_command", side_effect=mock_run_command):
-            try:
-                decrypt_and_extract(
-                    archive_path=archive_path,
-                    work_dir=work_dir,
-                    gnupg_dir=gnupg_dir,
-                    security=security,
-                    timeout=10,
-                    terminate_gpg_agent=False,  # dry-run mode
-                )
-            except (CommandError, ArchiveValidationError):
-                pass
+        with (
+            patch("xui_standby_sync.security.run_command", side_effect=mock_run_command),
+            contextlib.suppress(CommandError, ArchiveValidationError),
+        ):
+            decrypt_and_extract(
+                archive_path=archive_path,
+                work_dir=work_dir,
+                gnupg_dir=gnupg_dir,
+                security=security,
+                timeout=10,
+                terminate_gpg_agent=False,  # dry-run mode
+            )
         
         # gpg-agent kill should not be called in dry-run
         assert len(gpg_agent_called) == 0

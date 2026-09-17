@@ -11,7 +11,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
 import xui_standby_sync.locks as locks_module
+
 
 @pytest.fixture
 def tmp_path(monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -28,7 +30,7 @@ def tmp_path(monkeypatch: pytest.MonkeyPatch) -> Path:
     finally:
         shutil.rmtree(path, ignore_errors=True)
 
-from xui_standby_sync.models import (
+from xui_standby_sync.models import (  # noqa: E402 -- deferred import avoids circularity
     BackupMetadata,
     NotificationConfig,
     PathsConfig,
@@ -287,12 +289,22 @@ def setup_directories(mock_paths: PathsConfig):
     # Create allowlist file  
     allowlist = {
         "tables": {
-            "inbounds": {"matching_key": "tag", "allowed_columns": ["id", "port", "tag", "settings"]},
-            "clients": {"matching_key": "uuid", "fallback_matching_key": "email", "allowed_columns": ["id", "inbound_id", "uuid", "email"]},
-            "client_traffics": {"matching_key": "email", "allowed_columns": ["id", "inbound_id", "email", "up", "down"]},
-            "settings": {"allowed_keys": ["webPort", "webBasePath"]}
+            "inbounds": {
+                "matching_key": "tag",
+                "allowed_columns": ["id", "port", "tag", "settings"],
+            },
+            "clients": {
+                "matching_key": "uuid",
+                "fallback_matching_key": "email",
+                "allowed_columns": ["id", "inbound_id", "uuid", "email"],
+            },
+            "client_traffics": {
+                "matching_key": "email",
+                "allowed_columns": ["id", "inbound_id", "email", "up", "down"],
+            },
+            "settings": {"allowed_keys": ["webPort", "webBasePath"]},
         },
-        "assert_invariants": ["webPort"]
+        "assert_invariants": ["webPort"],
     }
     mock_paths.allowlist_path.write_text(json.dumps(allowlist))
     os.chmod(mock_paths.allowlist_path, 0o600)

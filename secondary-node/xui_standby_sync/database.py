@@ -10,7 +10,11 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from .exceptions import IntegrityCheckError, SchemaValidationError, SecurityViolationError
+from .exceptions import (
+    IntegrityCheckError,
+    SchemaValidationError,
+    SecurityViolationError,
+)
 from .models import DatabaseFingerprint
 from .security import verify_file_security
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from xui_standby_sync.exceptions import SyncError
-from xui_standby_sync.models import BackupMetadata, PathsConfig, RuntimeConfig
+from xui_standby_sync.models import BackupMetadata, PathsConfig
 from xui_standby_sync.workflow import run_sync
 
 
@@ -82,17 +82,19 @@ class TestWorkflowPreflight:
         config.options.dry_run = False
         config.options.force = False
 
-        with patch("xui_standby_sync.workflow.LockSet"):
-            with patch("xui_standby_sync.workflow.discover_backup") as mock_discover:
-                mock_discover.side_effect = SyncError("No backups found")
-                
-                with patch("xui_standby_sync.workflow.stop_service") as mock_stop:
-                    result = run_sync(config)
-                    
-                    # Service should NOT have been stopped
-                    mock_stop.assert_not_called()
-                    assert result.success is False
-                    assert result.service_was_stopped is False
+        with (
+            patch("xui_standby_sync.workflow.LockSet"),
+            patch("xui_standby_sync.workflow.discover_backup") as mock_discover,
+            patch("xui_standby_sync.workflow.stop_service") as mock_stop,
+        ):
+            mock_discover.side_effect = SyncError("No backups found")
+
+            result = run_sync(config)
+
+            # Service should NOT have been stopped
+            mock_stop.assert_not_called()
+            assert result.success is False
+            assert result.service_was_stopped is False
 
     def test_source_integrity_failure_does_not_stop_service(self, tmp_path: Path):
         """Source integrity failure does not call service stop."""
@@ -167,28 +169,30 @@ class TestWorkflowDryRun:
             signature_verified=False,
         )
 
-        with patch("xui_standby_sync.workflow.LockSet"):
-            with patch("xui_standby_sync.workflow.discover_backup", return_value=backup):
-                with patch("xui_standby_sync.workflow.decrypt_and_extract") as mock_decrypt:
-                    mock_decrypt.return_value = (paths.work_root / "x-ui.db", "")
-                    (paths.work_root / "x-ui.db").parent.mkdir(exist_ok=True)
-                    _make_db(paths.work_root / "x-ui.db")
-                    
-                    with patch("xui_standby_sync.workflow.stop_service") as mock_stop:
-                        with patch("xui_standby_sync.workflow.create_rollback_snapshot") as mock_snapshot:
-                            with patch("xui_standby_sync.workflow.apply_database_sync_plan") as mock_apply:
-                                with patch("xui_standby_sync.workflow.start_service") as mock_start:
-                                    result = run_sync(config)
-                                    
-                                    # These should NOT be called in dry-run
-                                    mock_stop.assert_not_called()
-                                    mock_snapshot.assert_not_called()
-                                    mock_apply.assert_not_called()
-                                    mock_start.assert_not_called()
-                                    
-                                    # But result should indicate success
-                                    assert result.success is True
-                                    assert result.plan is not None
+        with (
+            patch("xui_standby_sync.workflow.LockSet"),
+            patch("xui_standby_sync.workflow.discover_backup", return_value=backup),
+            patch("xui_standby_sync.workflow.decrypt_and_extract") as mock_decrypt,
+            patch("xui_standby_sync.workflow.stop_service") as mock_stop,
+            patch("xui_standby_sync.workflow.create_rollback_snapshot") as mock_snapshot,
+            patch("xui_standby_sync.workflow.apply_database_sync_plan") as mock_apply,
+            patch("xui_standby_sync.workflow.start_service") as mock_start,
+        ):
+            mock_decrypt.return_value = (paths.work_root / "x-ui.db", "")
+            (paths.work_root / "x-ui.db").parent.mkdir(exist_ok=True)
+            _make_db(paths.work_root / "x-ui.db")
+
+            result = run_sync(config)
+
+            # These should NOT be called in dry-run
+            mock_stop.assert_not_called()
+            mock_snapshot.assert_not_called()
+            mock_apply.assert_not_called()
+            mock_start.assert_not_called()
+
+            # But result should indicate success
+            assert result.success is True
+            assert result.plan is not None
 
     def test_dry_run_does_not_modify_persistent_workdir(self, tmp_path: Path):
         """Dry-run does not modify persistent WORK_DIR, snapshots, or GPG agent state."""

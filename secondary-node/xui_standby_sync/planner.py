@@ -47,7 +47,7 @@ def _normalised_clients_settings(row: sqlite3.Row, clients: list[sqlite3.Row], l
             for client in clients
         ]
     return _settings_json(settings, label)
-from .models import (
+from .models import (  # noqa: E402 -- deferred import breaks circular dependency
     ClientInsertOperation,
     ClientUpdateOperation,
     DatabaseSyncPlan,
