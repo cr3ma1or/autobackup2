@@ -12,7 +12,7 @@
 
 - Восстановление базы (`xui-restore`): ввести `RESTORE`.
 - Несовпадение схемы (`xui-restore`): ввести `YES`.
-- Перевод в Standby (`xui-failover`): ввести `STANDBY`.
+- Возврат в Standby (`xui-failover standby`): ввести `CONFIRM_STANDBY`; для заранее согласованной автоматизации доступен флаг `--yes`.
 
 ## 3. Стандарты форматирования журналов
 

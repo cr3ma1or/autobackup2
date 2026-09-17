@@ -156,7 +156,26 @@ JSON
 }
 ```
 
-Фактический файл использует верхний уровень `tables` для описаний `inbounds`, `clients`, `client_traffics` и `settings`; приведённая структура иллюстрирует ключи политики.
+Фактический файл использует верхний уровень `tables` для описаний `inbounds`, `clients`, `client_traffics` и `settings`; ниже приведён соответствующий рабочий формат:
+
+```json
+{
+  "tables": {
+    "clients": {
+      "matching_key": "uuid",
+      "fallback_matching_key": "email",
+      "allowed_columns": ["inbound_id", "uuid", "email"]
+    },
+    "settings": {
+      "matching_key": "key",
+      "allowed_keys": ["subEnableRouting", "subRoutingRules"]
+    }
+  },
+  "assert_invariants": ["webPort", "subPort", "tgBotEnable", "subURI"]
+}
+```
+
+Полный поддерживаемый шаблон находится в `secondary-node/examples/allowlist.json.example`.
 
 ## 5. Защита Inbound 1 Reality
 
