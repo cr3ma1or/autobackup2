@@ -75,6 +75,12 @@ def make_db(path: Path, *, donor: bool) -> None:
         "serverNames": ["primary.example"], "shortIds": ["primary-id"],
     }}
     settings = {"clients": [{"id": c[2], "email": c[3], "enable": 1} for c in clients]}
+    host_settings = {
+        "webPort": "primary-web-port" if donor else "standby-web-port",
+        "subPort": "standby-sub-port",
+        "tgBotEnable": "false",
+        "subURI": "/standby-sub",
+    }
     with sqlite3.connect(path) as db:
         db.executescript("""
         CREATE TABLE inbounds (id INTEGER PRIMARY KEY, port INTEGER NOT NULL,
@@ -90,9 +96,7 @@ def make_db(path: Path, *, donor: bool) -> None:
         db.execute("INSERT INTO inbounds VALUES (1,443,'vless','primary',?,?,1,?)",
                    (json.dumps(settings), json.dumps(reality), "{}"))
         db.executemany("INSERT INTO clients VALUES (?,?,?,?,1,0,0,NULL,NULL)", clients)
-        db.executemany("INSERT INTO settings(key,value) VALUES (?,?)", [
-            ("webPort", "2053" if donor else "60291"), ("subPort", "2096"),
-            ("tgBotEnable", "false"), ("subURI", "/standby-sub")])
+        db.executemany("INSERT INTO settings(key,value) VALUES (?,?)", host_settings.items())
     os.chmod(path, 0o600)
 
 
@@ -183,7 +187,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         obj = json.loads(db.execute("SELECT settings FROM inbounds WHERE id=1").fetchone()[0])
         settings = dict(db.execute("SELECT key,value FROM settings").fetchall())
         reality = json.loads(db.execute("SELECT stream_settings FROM inbounds WHERE id=1").fetchone()[0])
-    checks = {"clients table": len(rows) == 2, "dual-layer": {x["uuid"] for x in obj["clients"]} == {x[0] for x in rows}, "webPort": settings["webPort"] == "60291", "subPort": settings["subPort"] == "2096", "tgBotEnable": settings["tgBotEnable"] == "false", "Reality identity": reality["settings"]["publicKey"] == "STANDBY-PUBLIC-KEY" and reality["settings"]["privateKey"] == "STANDBY-PRIVATE-KEY"}
+    checks = {"clients table": len(rows) == 2, "dual-layer": {x["uuid"] for x in obj["clients"]} == {x[0] for x in rows}, "webPort": settings["webPort"] == "standby-web-port", "subPort": settings["subPort"] == "standby-sub-port", "tgBotEnable": settings["tgBotEnable"] == "false", "Reality identity": reality["settings"]["publicKey"] == "STANDBY-PUBLIC-KEY" and reality["settings"]["privateKey"] == "STANDBY-PRIVATE-KEY"}
     for name, ok in checks.items(): log(f"{name}: {'PASS' if ok else 'FAIL'}")
     return 0 if result.success and all(checks.values()) else 1
 

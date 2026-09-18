@@ -34,8 +34,9 @@ umask 077
 
 # Error and signal handling
 cleanup_exit() {
-  # Cleanup resources on normal exit
-  :
+  if [[ -n "${TEMP_REPO_DIR:-}" && -d "$TEMP_REPO_DIR" ]]; then
+    rm -rf -- "$TEMP_REPO_DIR"
+  fi
 }
 
 cleanup_error() {
@@ -95,12 +96,16 @@ readonly SB_SYNC_LOG_FILE="/var/log/xui-standby-sync.log"
 
 readonly SYSTEMD_DIR="/etc/systemd/system"
 readonly LOGROTATE_DIR="/etc/logrotate.d"
+readonly REPO_OWNER="${REPO_OWNER:-cr3ma1or}"
+readonly REPO_NAME="${REPO_NAME:-autobackup2}"
 
 ROLE="${ROLE_AUTO}"
 ROLE_EXPLICIT=0
 UNATTENDED=0
 NO_SYSTEMD=0
+UNINSTALL=0
 REPO_ROOT=""
+TEMP_REPO_DIR=""
 
 # ------------------------------------------------------------------------------
 # Logging & failure helpers
@@ -126,6 +131,7 @@ Options:
   --role <primary|secondary|auto>   Force node role (default: auto-detect)
   --unattended                      Non-interactive; never prompt
   --no-systemd                      Do not install/enable systemd units & timers
+  --uninstall                       Remove installed components, preserving backup archives
   -h, --help                        Show this help and exit
 EOF
 }
@@ -153,6 +159,10 @@ parse_args() {
         ;;
       --no-systemd)
         NO_SYSTEMD=1
+        shift
+        ;;
+      --uninstall)
+        UNINSTALL=1
         shift
         ;;
       -h|--help)
@@ -258,10 +268,82 @@ ensure_dir() {
 }
 
 # ------------------------------------------------------------------------------
+# Repository bootstrap and removal
+# ------------------------------------------------------------------------------
+bootstrap_repository() {
+  local script_dir archive
+  script_dir="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -d "$script_dir/primary-node" && -d "$script_dir/secondary-node" ]]; then
+    REPO_ROOT="$script_dir"
+    return 0
+  fi
+
+  require_cmd curl tar mktemp
+  TEMP_REPO_DIR="$(mktemp -d)"
+  archive="${TEMP_REPO_DIR}/repository.tar.gz"
+  info "Downloading ${REPO_OWNER}/${REPO_NAME} main branch"
+  curl -fsSL "https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/heads/main.tar.gz" \
+    -o "$archive"
+  tar -xzf "$archive" --strip-components=1 -C "$TEMP_REPO_DIR"
+  rm -f -- "$archive"
+  [[ -d "$TEMP_REPO_DIR/primary-node" && -d "$TEMP_REPO_DIR/secondary-node" ]] || \
+    die "Downloaded repository does not contain required project directories"
+  REPO_ROOT="$TEMP_REPO_DIR"
+}
+
+remove_iptables_transit_chain() {
+  local chain="XUI_TRANSIT_DNAT"
+  command -v iptables >/dev/null 2>&1 || return 0
+  iptables -w -t nat -S PREROUTING 2>/dev/null | while IFS= read -r rule; do
+    [[ "$rule" == *" -j $chain" ]] || continue
+    read -r -a rule_parts <<< "${rule#-A PREROUTING }"
+    iptables -w -t nat -D PREROUTING "${rule_parts[@]}" 2>/dev/null || true
+  done
+  iptables -w -t nat -F "$chain" 2>/dev/null || true
+  iptables -w -t nat -X "$chain" 2>/dev/null || true
+}
+
+uninstall() {
+  local unit path
+  local -a units=(
+    xui-backup.timer xui-backup.service
+    xui-standby-sync.timer xui-standby-sync.service
+    xui-backup-retention.timer xui-backup-retention.service
+  )
+  local -a binaries=(
+    xui-backup xui-restore xui-standby xui-standby-sync
+    xui-backup-health xui-backup-retention xui-failover
+  )
+  local -a logrotate_files=(
+    xui-backup xui-restore xui-standby-sync xui-backup-receiver
+  )
+
+  require_root
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now "${units[@]}" 2>/dev/null || true
+  fi
+  for unit in "${units[@]}"; do
+    rm -f -- "${SYSTEMD_DIR}/${unit}"
+  done
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+  fi
+  for path in "${binaries[@]}"; do
+    rm -f -- "${PRIMARY_BIN_DIR}/${path}"
+  done
+  for path in "${logrotate_files[@]}"; do
+    rm -f -- "${LOGROTATE_DIR}/${path}"
+  done
+  rm -rf -- "$SB_SYNC_DIR" "$SB_BIN_DIR"
+  remove_iptables_transit_chain
+  info "Uninstall complete; backup archives were preserved"
+}
+
+# ------------------------------------------------------------------------------
 # Role detection
 # ------------------------------------------------------------------------------
 detect_role() {
-  if [[ ! -t 0 || ! -t 1 ]] && (( UNATTENDED == 0 )); then
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]] && (( UNATTENDED == 0 )); then
     warn "Interactive TTY is unavailable; automatically enabling --unattended mode"
     UNATTENDED=1
   fi
@@ -1071,8 +1153,12 @@ print_summary() {
 # ------------------------------------------------------------------------------
 main() {
   parse_args "$@"
-  REPO_ROOT="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
   check_bash
+  if (( UNINSTALL == 1 )); then
+    uninstall
+    return 0
+  fi
+  bootstrap_repository
   require_root
   detect_role
   install_common

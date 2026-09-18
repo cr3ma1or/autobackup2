@@ -22,7 +22,7 @@
 Примеры:
 
 - `2026-09-05 03:27:31 UTC [INFO] [xui-backup] backup_completed; archive=backup-20260905.tar.gz.gpg; size=38244; sha256=a1b2...`
-- `2026-09-05 03:30:15 UTC [ERROR] [xui-standby-sync] invariant_violation; field=webPort; expected=60291; actual=<example>39284</example>; rollback=executed`
+- `2026-09-05 03:30:15 UTC [ERROR] [xui-standby-sync] invariant_violation; field=webPort; expected=<LOCAL_WEB_PORT>; actual=<DONOR_WEB_PORT>; rollback=executed`
 
 ## 4. Оповещения в Telegram (Mobile UX)
 

@@ -7,18 +7,16 @@
 │ - sub.example.com ──► <SECONDARY_IP> (Secondary Gateway) │
 │ - direct.example.com ──► <PRIMARY_IP> (Diagnostic Direct) │
 └───────────────────┬────────────────────────────────────────────────────┘
-│ HTTPS: 2096 (Subs), 443 (Reality)
+│ HTTPS: <SUBS_PORT> (Subs), <REALITY_PORT> (Reality)
 ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │ SECONDARY NODE (Standby Gateway & Storage) │
 │ Public IP: <SECONDARY_IP> | OS: Debian 12 | SSH: <SECONDARY_SSH_PORT> │
 │ Роли: SSH-приемник, хранилище нулевого доверия, Hot-Standby нода │
 │ - Служебный пользователь: xbackup (UID 999, shell: /bin/bash) │
-│ - 3x-ui сервисы: Web 60291, Sub 2096, Reality 443 │
-│ - IPTables DNAT (режим STANDBY): │
-│ :2096 -> <PRIMARY_IP>:<example>39285</example> │
-│ :443 -> <PRIMARY_IP>:443 │
-│ :<example>53810</example> -> <PRIMARY_IP>:<example>39284</example> │
+│ - 3x-ui сервисы: Web <STANDBY_WEB_PORT>, Sub <STANDBY_SUB_PORT>, Reality <REALITY_PORT> │
+│ - IPTables DNAT (режим STANDBY, задаётся TRANSIT_PORT_MAP): │
+│ :<EXTERNAL_PORT> -> <PRIMARY_IP>:<PRIMARY_PORT> │
 └───────────────────▲────────────────────────────────────────────────────┘
 │ SSH Stream (Forced Command) | Port: <SECONDARY_SSH_PORT>
 │ Dual-Recipient GPG AES-256 Encrypted Tarball
@@ -27,7 +25,7 @@
 │ Public IP: <PRIMARY_IP> | OS: Ubuntu 24.04 LTS | SSH: <PRIMARY_SSH_PORT>│
 │ Роли: Обработка боевого клиентского трафика, формирование бэкапов │
 │ - Пользователь исполнения: root │
-│ - 3x-ui сервисы: Web <example>39284</example>, Sub <example>39285</example>, Reality 443 │
+│ - 3x-ui сервисы: Web <PRIMARY_WEB_PORT>, Sub <PRIMARY_SUB_PORT>, Reality <REALITY_PORT> │
 │ - Исходящий шлюз: wireproxy SOCKS5 (127.0.0.1:40000) │
 │ - Конвейер бэкапа: xui-backup (Systemd Timer: 03:20 UTC +/- 20min) │
 └────────────────────────────────────────────────────────────────────────┘

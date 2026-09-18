@@ -2,7 +2,7 @@
 
 ## 1. Контуры наблюдения
 
-1. **Data Plane:** Мониторинг сокетов (443, 2096, 60291, <example>39284</example>), счетчиков IPTables DNAT, проверка исходящего шлюза wireproxy.
+1. **Data Plane:** Мониторинг настроенных сокетов, счетчиков IPTables DNAT, проверка исходящего шлюза wireproxy.
 2. **Control Plane:** Состояние systemd-юнитов и таймеров, статус режима `/etc/x-ui/standby-mode`.
 3. **Storage Plane:** Сенсор `xui-backup-health.sh`, проверка возраста последнего архива (<26 ч), целостность SHA-256.
 4. **Database Plane:** `PRAGMA integrity_check;`, контроль размера WAL-файлов (<10 МБ).
@@ -30,15 +30,15 @@
 ### Primary Node
 
 - `443/tcp` — Inbound VLESS Reality
-- `<example>39284</example>/tcp` — Веб-панель управления 3x-ui
-- `<example>39285</example>/tcp` — Выдача подписок клиентам
+- `<PRIMARY_WEB_PORT>/tcp` — Веб-панель управления 3x-ui
+- `<PRIMARY_SUB_PORT>/tcp` — Выдача подписок клиентам
 - `40000/tcp` — Локальный исходящий WARP SOCKS5
 - `<PRIMARY_SSH_PORT>/tcp` — Системный порт SSH
 
 ### Secondary Node
 
-- `443/tcp` — Inbound VLESS Reality (локальный резерв / транзит DNAT)
-- `2096/tcp` — Локальный саб-сервер (в режиме ожидания перехвачен DNAT)
-- `60291/tcp` — Локальная веб-панель управления 3x-ui
-- `<example>53810</example>/tcp` — Транзитный порт доступа к веб-панели Primary Node
+- `<REALITY_PORT>/tcp` — Inbound VLESS Reality (локальный резерв / транзит DNAT)
+- `<STANDBY_SUB_PORT>/tcp` — Локальный саб-сервер (в режиме ожидания перехвачен DNAT)
+- `<STANDBY_WEB_PORT>/tcp` — Локальная веб-панель управления 3x-ui
+- `<TRANSIT_PORT>/tcp` — Транзитный порт доступа к сервису Primary Node
 - `<SECONDARY_SSH_PORT>/tcp` — Системный SSH и порт приемника бэкапов

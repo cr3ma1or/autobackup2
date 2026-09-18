@@ -36,7 +36,7 @@ High-signal operational guide. Follow strictly.
 - **Python Runtime**: Standard Library ONLY (>= 3.10). No external pip dependencies.
 - **SQLite Engine**: `sqlite3.connect(..., isolation_level=None)` with explicit `BEGIN IMMEDIATE;`, `COMMIT;`, `ROLLBACK;`.
 - **Dual-Layer Merge**: Every client mutation in the `clients` table MUST update the JSON `clients` array inside `inbounds.settings` synchronously in the same transaction.
-- **Standby Isolation**: Never overwrite target `webPort` (60291), `subPort` (2096), `subURI`, local TLS paths, `tgBotEnable=false`, or Inbound 1 Reality network identity (ports/keys/SNI/externalProxy).
+- **Standby Isolation**: Never overwrite target `webPort`, `subPort`, `subURI`, local TLS paths, `tgBotEnable=false`, or Inbound 1 Reality network identity (ports/keys/SNI/externalProxy).
 - **Snapshots & WAL**: Target DB snapshots (`/etc/x-ui/standby-snapshots/`) are taken strictly AFTER stopping `x-ui.service`. Purge `-wal` and `-shm` before restore.
 - **Bash Hardening**: `#!/usr/bin/env bash`, `set -Eeuo pipefail`, `umask 077`. Double-quote all expansions. Return 130 on SIGINT, 143 on SIGTERM. Wipe secrets via `shred -u -z -n 1`.
 

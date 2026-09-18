@@ -105,8 +105,8 @@ Bash-скрипты устанавливают traps и завершаются �
 
 Следующие параметры Secondary Node строго запрещено перезаписывать данными с Primary:
 
-- `settings.webPort` (хостовый инвариант: `60291`).
-- `settings.subPort` (хостовый инвариант: `2096`).
+- `settings.webPort` (локальный хостовый инвариант).
+- `settings.subPort` (локальный хостовый инвариант).
 - `settings.subURI` (локальный endpoint подписок).
 - `settings.tgBotEnable` (хостовый инвариант: `false`, во избежание Telegram 409 Conflict).
 - `settings.*CertFile` / `*KeyFile` (локальные пути к SSL-сертификатам).
