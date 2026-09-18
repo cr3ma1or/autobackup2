@@ -97,6 +97,7 @@ readonly SYSTEMD_DIR="/etc/systemd/system"
 readonly LOGROTATE_DIR="/etc/logrotate.d"
 
 ROLE="${ROLE_AUTO}"
+ROLE_EXPLICIT=0
 UNATTENDED=0
 NO_SYSTEMD=0
 REPO_ROOT=""
@@ -138,10 +139,12 @@ parse_args() {
       --role)
         (( $# >= 2 )) || { usage >&2; exit 2; }
         ROLE="$2"
+        ROLE_EXPLICIT=1
         shift 2
         ;;
       --role=*)
         ROLE="${1#*=}"
+        ROLE_EXPLICIT=1
         shift
         ;;
       --unattended)
@@ -263,6 +266,10 @@ detect_role() {
     UNATTENDED=1
   fi
 
+  if (( UNATTENDED == 1 )) && (( ROLE_EXPLICIT == 0 || ROLE == ROLE_AUTO )); then
+    die "In unattended mode, --role [primary|secondary] must be specified explicitly."
+  fi
+
   if [[ "$ROLE" != "$ROLE_AUTO" ]]; then
     return 0
   fi
@@ -285,7 +292,7 @@ detect_role() {
     info "Detected secondary node (found $SB_BASE_DIR)"
   else
     ROLE="$ROLE_PRIMARY"
-    warn "Unattended auto-detect defaulted to primary; pass --role secondary if this is a standby node"
+    warn "Interactive auto-detection selected primary"
   fi
 }
 
@@ -309,6 +316,11 @@ install_common() {
       common=(bash tar gzip coreutils findutils util-linux gnupg sqlite3 curl python3)
       ;;
   esac
+  if [[ "$ROLE" == "$ROLE_SECONDARY" ]]; then
+    case "$PKG_MANAGER" in
+      apt-get|dnf|yum) common+=(openssh-server) ;;
+    esac
+  fi
   install_packages "${common[@]}"
 
   ensure_dir /etc/x-ui root:root 0700
@@ -525,10 +537,28 @@ generate_gpg_key() {
 }
 
 # ------------------------------------------------------------------------------
+# Role transition cleanup
+# ------------------------------------------------------------------------------
+cleanup_secondary_state_for_primary() {
+  if [[ -f "$SB_STANDBY_MODE_FILE" || -d "$SB_BASE_DIR" ]]; then
+    warn "Secondary state detected; disabling standby services before primary installation"
+  fi
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    systemctl disable --now xui-standby-sync.timer xui-standby-sync.service 2>/dev/null || true
+    systemctl disable --now xui-backup-retention.timer xui-backup-retention.service 2>/dev/null || true
+  fi
+  if [[ -e "$SB_STANDBY_MODE_FILE" ]]; then
+    rm -f -- "$SB_STANDBY_MODE_FILE"
+    info "Removed standby marker: $SB_STANDBY_MODE_FILE"
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # Primary role
 # ------------------------------------------------------------------------------
 install_primary() {
   info "=== Installing PRIMARY role ==="
+  cleanup_secondary_state_for_primary
 
   local -a req=(basename cat chmod chown cut date df find flock gpg gpgconf gzip install mktemp mv od rm sha256sum sort sqlite3 stat tail tar tr systemctl)
   require_cmd "${req[@]}"
@@ -709,7 +739,14 @@ create_xbackup_user() {
     fi
   else
     info "Creating system user $SB_USER"
-    useradd -r -s /bin/bash -M -d /home/"$SB_USER" "$SB_USER"
+    local uid_owner=""
+    uid_owner="$(getent passwd 999 | cut -d: -f1 || true)"
+    if [[ -n "$uid_owner" ]]; then
+      warn "UID 999 is already assigned to $uid_owner; creating $SB_USER with the default system UID"
+      useradd -r -s /bin/bash -M -d /home/"$SB_USER" "$SB_USER"
+    else
+      useradd -r -u 999 -s /bin/bash -M -d /home/"$SB_USER" "$SB_USER"
+    fi
   fi
   mkdir -p /home/"$SB_USER"
   chown -h "$SB_USER:$SB_USER" /home/"$SB_USER"
@@ -735,6 +772,22 @@ PY
 
   create_xbackup_user
 
+  # -- SSH server configuration -------------------------------------------------
+  local repo_secondary="${REPO_ROOT}/secondary-node"
+  [[ -f "$repo_secondary/examples/sshd_config_xbackup" ]] || die "Cannot find SSH template in repository"
+  install_file "$repo_secondary/examples/sshd_config_xbackup" \
+    "/etc/ssh/sshd_config.d/xbackup.conf" 0644 root:root
+  if command -v sshd >/dev/null 2>&1; then
+    sshd -t || die "Invalid SSH configuration after installing xbackup.conf"
+    if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
+      systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || \
+        systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || \
+        die "Unable to reload or restart SSH service"
+    fi
+  else
+    die "sshd is required for secondary role"
+  fi
+
   # -- Backup store owned by xbackup -------------------------------------------
   ensure_dir "$SB_BASE_DIR" root:"$SB_USER" 0750
   ensure_dir "$SB_BIN_DIR" root:root 0755
@@ -750,7 +803,6 @@ PY
   chmod 0600 "$SB_LOCK_FILE"
 
   # -- Bash scripts ---------------------------------------------------------------
-  local repo_secondary="${REPO_ROOT}/secondary-node"
   [[ -d "$repo_secondary" ]] || die "Cannot find secondary-node/ in repo root: $REPO_ROOT"
   [[ -f "${REPO_ROOT}/primary-node/xui-backup.sh" ]] || die "Cannot find primary-node/xui-backup.sh in repo root: $REPO_ROOT"
   [[ -f "${REPO_ROOT}/primary-node/xui-restore.sh" ]] || die "Cannot find primary-node/xui-restore.sh in repo root: $REPO_ROOT"
@@ -965,7 +1017,7 @@ WantedBy=timers.target
 EOF
 )"
       systemctl daemon-reload
-      systemctl disable --now xui-backup.timer 2>/dev/null || true
+      systemctl disable --now xui-backup.timer xui-backup.service 2>/dev/null || true
       systemctl enable --now xui-standby-sync.timer xui-backup-retention.timer
       info "Enabled xui-standby-sync.timer and xui-backup-retention.timer"
     fi

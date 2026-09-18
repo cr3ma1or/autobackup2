@@ -114,12 +114,19 @@ Secondary: `/home/xbackup/.ssh/authorized_keys`
 from="<PRIMARY_IP>",command="/opt/xui-backups/bin/xui-backup-receiver.sh",no-pty,no-port-forwarding,no-X11-forwarding,no-agent-forwarding ssh-ed25519 <PUBLIC_KEY> backup-transport
 ```
 
-SSHD Hardening (`/etc/ssh/sshd_config.d/xbackup.conf`):
+SSHD Hardening (`/etc/ssh/sshd_config.d/xbackup.conf`), устанавливаемый `install.sh` на Secondary (права `0644 root:root`):
 
 ```
-Port <SECONDARY_SSH_PORT>
-AllowUsers root xbackup@<PRIMARY_IP>
+# Restrict the xbackup user to forced-command-only SSH for backup delivery.
+Match User xbackup
+    ForceCommand /opt/xui-backups/bin/xui-backup-receiver.sh
+    AllowAgentForwarding no
+    AllowTcpForwarding no
+    PermitTunnel no
+    X11Forwarding no
 ```
+
+После установки конфигурация проверяется командой `sshd -t`, затем служба SSH мягко перезагружается (`reload`, с fallback на `restart`).
 
 ## 5. Systemd Units и таймеры
 

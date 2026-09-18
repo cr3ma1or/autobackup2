@@ -5,7 +5,7 @@
 - **Data & Logic Layer:** Python 3.10+ (встроенные библиотеки `sqlite3`, `json`, `hashlib`, `pathlib`). Сторонние зависимости в production runtime запрещены.
 - **Control & Network Layer:** GNU Bash 5.0+ (строгий режим `set -Eeuo pipefail`), `iptables` (DNAT/MASQUERADE), `systemd` (cgroups v2, песочницы).
 - **СУБД:** SQLite 3.31+ в режиме журналирования WAL (`journal_mode=WAL`, `synchronous=NORMAL`).
-- **Безопасность и транспорт:** OpenSSH (chroot/forced commands), GnuPG (GPG AES-256), `flock`, `shred`.
+- **Безопасность и транспорт:** OpenSSH (sshd на Secondary, конфигурация `/etc/ssh/sshd_config.d/xbackup.conf`, forced commands), GnuPG (GPG AES-256), `flock`, `shred`.
 
 ## 2. Топология узлов и распределение ролей
 
