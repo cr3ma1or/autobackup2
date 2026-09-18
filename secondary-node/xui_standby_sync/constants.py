@@ -19,7 +19,8 @@ LOG_FILE = Path("/var/log/xui-standby-sync.log")
 DIRECTORY_MODE = 0o700
 FILE_MODE = 0o600
 DEFAULT_CMD_TIMEOUT = 30
-DEFAULT_MAX_AGE_SECONDS = 6 * 3600
+# Covers the daily primary backup plus the 12-hour secondary sync cadence and jitter.
+DEFAULT_MAX_AGE_SECONDS = 26 * 3600
 DEFAULT_MAX_CLOCK_SKEW_SECONDS = 300
 DEFAULT_MAX_UNPACK_SIZE_BYTES = 500 * 1024 * 1024
 DEFAULT_MAX_ROLLBACK_COPIES = 5

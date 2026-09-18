@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import tempfile
 from collections.abc import Callable
 from dataclasses import asdict, replace
@@ -26,9 +27,11 @@ from .models import (
     BackupMetadata,
     DatabaseSyncPlan,
     ExecutionResult,
+    NotificationConfig,
     RuntimeConfig,
     SyncRunPlan,
 )
+from .notifications import send_telegram
 from .planner import build_database_sync_plan
 from .rollback import create_rollback_snapshot, restore_rollback_snapshot
 from .security import verify_file_security
@@ -62,7 +65,21 @@ def _result_payload(result: ExecutionResult) -> dict[str, Any]:
     return payload
 
 
+def _send_sync_notification(config: RuntimeConfig, result: ExecutionResult) -> None:
+    """Best-effort notification that cannot change synchronization outcome."""
+    notification = config.notifications
+    if not isinstance(notification, NotificationConfig) or not notification.enabled:
+        return
+    if result.success:
+        message = f"#INFO: Standby sync succeeded\nRun: {result.run_id}"
+    else:
+        message = f"#CRITICAL: Standby sync failed\nError: {result.error_message or 'unknown error'}"
+    send_telegram(message, notification)
+
+
 def _verify_standby(config: RuntimeConfig) -> None:
+    if os.geteuid() != 0:
+        raise SyncError("Synchronization requires root privileges")
     marker = config.paths.standby_mode_file
     verify_file_security(marker, "standby marker")
     mode = marker.read_text(encoding="utf-8").strip()
@@ -155,9 +172,11 @@ def run_sync(
                 plan = SyncRunPlan(backup=backup, database=database_plan)
                 ensure_not_cancelled()
                 if config.options.dry_run:
-                    return ExecutionResult(
+                    result = ExecutionResult(
                         True, run_id, plan, False, False, False, None, None, 0
                     )
+                    _send_sync_notification(config, result)
+                    return result
 
                 lifecycle_error: BaseException | None = None
                 service_start_required = True
@@ -229,7 +248,7 @@ def run_sync(
                                 )
                 if lifecycle_error is not None:
                     raise lifecycle_error
-        return ExecutionResult(
+        result = ExecutionResult(
             True,
             snapshot.run_id if snapshot else run_id,
             plan,
@@ -240,6 +259,8 @@ def run_sync(
             None,
             0,
         )
+        _send_sync_notification(config, result)
+        return result
     except (KeyboardInterrupt, SystemExit):
         raise
     except BaseException as error:

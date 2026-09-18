@@ -429,7 +429,7 @@ class TestPlannerClients:
         assert len(plan.client_updates) == 1
         assert plan.client_updates[0].target_client_id == 1
 
-    def test_empty_source_clients_plans_stale_target_deletion(self, tmp_path: Path):
+    def test_empty_source_single_client_is_rejected_by_mass_deletion_guard(self, tmp_path: Path):
         source = tmp_path / "source.db"
         target = tmp_path / "target.db"
         _create_full_db(source, inbounds=[
@@ -443,13 +443,12 @@ class TestPlannerClients:
             {"id": 1, "inbound_id": 1, "uuid": "old-uuid", "email": "old@test.com"}
         ])
 
-        plan = build_database_sync_plan(
-            source_db=source, target_db=target,
-            allowlist=_allowlist(), reserved_ports=frozenset(),
-            primary_ip=None, standby_ip=None,
-        )
-
-        assert 1 in plan.client_deletes
+        with pytest.raises(PlanValidationError, match="mass client deletion"):
+            build_database_sync_plan(
+                source_db=source, target_db=target,
+                allowlist=_allowlist(), reserved_ports=frozenset(),
+                primary_ip=None, standby_ip=None,
+            )
 
     def test_client_without_uuid_email_is_validation_error(self, tmp_path: Path):
         source = tmp_path / "source.db"

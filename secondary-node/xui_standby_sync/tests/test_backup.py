@@ -151,17 +151,16 @@ class TestFreshnessValidation:
     """Test backup freshness and clock skew validation."""
 
     def test_stale_backup_fails_without_force(self, tmp_path: Path):
-        """Stale backup fails without --force."""
-        # Create backup that is older than max age
-        old_timestamp = datetime.now(timezone.utc) - timedelta(hours=12)
-        
+        """Backup beyond the configured freshness window is stale."""
+        old_timestamp = datetime.now(timezone.utc) - timedelta(hours=27)
+
         is_fresh, age_hours = verify_freshness(
             old_timestamp,
             max_age_seconds=DEFAULT_MAX_AGE_SECONDS,
             max_clock_skew_seconds=DEFAULT_MAX_CLOCK_SKEW_SECONDS,
             now=time.time(),
         )
-        
+
         assert is_fresh is False
         assert age_hours > 0
 

@@ -34,6 +34,6 @@
 
 ## 4. Разграничение привилегий
 
-- Root-компоненты: `xui-backup`, `xui-restore`, `xui-standby-sync` (EUID == 0).
+- Root-компоненты: `xui-backup`, `xui-restore`, `xui-standby-sync` (требуют EUID == 0 через systemd/операционную процедуру; Python CLI не выполняет отдельную проверку EUID).
 - Non-root компоненты: `xui-backup-receiver` строго под `xbackup` (EUID != 0).
 - Права каталогов: Общесистемным каталогам (`/usr/local/bin`) запрещено присваивать права `0700` (строго `0755 root:root`).

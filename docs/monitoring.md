@@ -9,21 +9,21 @@
 
 ## 2. Контракт зонда SLA (`xui-backup-health.sh`)
 
-- Вывод в STDOUT строго в формате Key-Value:
-  `STATUS=<OK|CRITICAL> version=<VER> archive=<NAME> bytes=<INT> age_hours=<INT> checksum=<OK|FAIL> reason=<CODE> LAST_RECEIVER_LOG=<LOG>`
+- Вывод в STDOUT имеет Key-Value формат. Первая строка: `STATUS=<OK|WARN|CRITICAL> version=<VER> ...`; вторая строка: `LAST_RECEIVER_LOG=<LOG>`.
+  - Успех: `STATUS=OK version=<VER> archive=<NAME> bytes=<INT> age_hours=<INT> checksum=OK` — поля `reason=` нет.
+  - Устаревший, но целый архив: `STATUS=WARN ... archive=<NAME> reason=stale age_hours=<INT> age_seconds=<INT> max_age_hours=26 checksum=OK`.
+  - Остальные ошибки имеют `STATUS=CRITICAL ... reason=<CODE>`.
 - Коды возврата:
   - `0` — Состояние OK.
-  - `1` — Синтаксическая ошибка CLI.
+  - `1` — синтаксическая ошибка CLI либо WARN (устаревший архив).
   - `2` — Критическое нарушение SLA / сбой целостности.
 
 ### Реестр диагностических кодов (`reason=`)
 
-- `health_check_passed` (OK) — Контур исправен.
-- `no_archives_found` (CRITICAL) — Хранилище входящих бэкапов пусто.
-- `stale_backup` (CRITICAL) — Возраст бэкапа превышает 26 часов.
-- `checksum_fail` (CRITICAL) — Несовпадение фактического SHA-256 с файлом `.sha256`.
-- `missing_sidecar_hash` (CRITICAL) — Архив обнаружен без sidecar-файла контрольной суммы.
-- `storage_unreachable` (CRITICAL) — Отсутствуют права чтения на каталог incoming.
+- `missing_dependency`, `bash_too_old`, `incoming_directory_missing_or_unreadable`, `no_archives_found` (CRITICAL) — ошибка окружения либо хранилище входящих бэкапов пусто.
+- `unparseable_timestamp`, `invalid_timestamp_epoch`, `archive_or_sidecar_missing_or_empty`, `checksum_fail`, `archive_vanished_during_check`, `invalid_archive_size`, `unexpected_error`, `interrupted` (CRITICAL) — фактические диагностические коды скрипта.
+- `stale` (WARN) — возраст бэкапа превышает 26 часов; это не `CRITICAL` и не `stale_backup`.
+- Успешный статус не выдаёт `reason=health_check_passed`.
 
 ## 3. Эталонная матрица сетевых слушателей
 

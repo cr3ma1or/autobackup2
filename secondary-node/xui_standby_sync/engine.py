@@ -88,8 +88,6 @@ def apply_database_sync_plan(
             raise PlanExecutionError(
                 "Target database fingerprint changed since planning"
             )
-        # sqlite3 will automatically begin transaction on first DML statement
-        # Explicit BEGIN is not needed with default isolation_level
         _ensure_not_cancelled(is_cancelled)
         inbound_mapping = dict(plan.inbound_mapping)
         inbound_columns = _columns(connection, "inbounds")

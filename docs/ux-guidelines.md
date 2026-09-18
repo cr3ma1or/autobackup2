@@ -36,6 +36,6 @@
 Host: Secondary Node
 Time: 2026-09-05 04:00:18 UTC
 Reason: NOT NULL constraint failed: clients.inbound_id
-Rollback: SUCCESS (Restored to last-good-pre-sync.db)
+Rollback: SUCCESS (Restored from target-before-sync.db)
 x-ui.service: ACTIVE (Running)
 ```

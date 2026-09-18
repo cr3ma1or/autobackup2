@@ -22,7 +22,7 @@
 - **F-302 Dual-Layer Merge `[DONE]`:** Атомарное обновление таблицы `clients` и JSON-массива в `inbounds.settings`.
 - **F-303 Host Invariants Preservation `[DONE]`:** Защита сетевых портов, SSL-путей и настроек бота Secondary Node.
 - **F-304 SQLite Transaction Safety `[DONE]`:** Явное управление транзакциями через `isolation_level=None`.
-- **F-305 Safe Rollback Lifecycle `[DONE]`:** Создание снапшота `last-good-pre-sync.db` строго после остановки сервиса и гарантированный откат.
+- **F-305 Safe Rollback Lifecycle `[DONE]`:** Создание снимка `target-before-sync.db` строго после остановки сервиса и гарантированный откат.
 - **F-306 Split-Brain Guard `[DONE]`:** Запрет синхронизации, если маркер режима не равен точному значению `STANDBY`, либо существует failover-блокировка.
 - **F-307 Client Pruning & Traffic Purge `[DONE]`:** Удаление отсутствующих пользователей и очистка устаревшей статистики.
 

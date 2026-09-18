@@ -305,7 +305,7 @@ def build_database_sync_plan(
         )
 
         managed_target_count = sum(1 for row in target_clients if row["inbound_id"] in managed_target_ids)
-        if managed_target_count > 1 and len(client_deletes) * 2 > managed_target_count:
+        if managed_target_count > 0 and len(client_deletes) * 2 > managed_target_count:
             raise PlanValidationError("CRITICAL: mass client deletion exceeds 50% of Standby clients")
 
         traffic_config = allowlist["tables"]["client_traffics"]

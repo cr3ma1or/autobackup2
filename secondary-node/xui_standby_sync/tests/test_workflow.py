@@ -83,6 +83,7 @@ class TestWorkflowPreflight:
         config.options.force = False
 
         with (
+            patch("xui_standby_sync.workflow.os.geteuid", return_value=0),
             patch("xui_standby_sync.workflow.LockSet"),
             patch("xui_standby_sync.workflow.discover_backup") as mock_discover,
             patch("xui_standby_sync.workflow.stop_service") as mock_stop,
@@ -170,6 +171,7 @@ class TestWorkflowDryRun:
         )
 
         with (
+            patch("xui_standby_sync.workflow.os.geteuid", return_value=0),
             patch("xui_standby_sync.workflow.LockSet"),
             patch("xui_standby_sync.workflow.discover_backup", return_value=backup),
             patch("xui_standby_sync.workflow.decrypt_and_extract") as mock_decrypt,
