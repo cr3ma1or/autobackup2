@@ -1,0 +1,5 @@
+.claude/
+.git/
+backups/
+*.tar.gz
+*.sql
