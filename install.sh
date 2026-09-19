@@ -348,7 +348,7 @@ detect_role() {
     UNATTENDED=1
   fi
 
-  if (( UNATTENDED == 1 )) && (( ROLE_EXPLICIT == 0 || ROLE == ROLE_AUTO )); then
+  if (( UNATTENDED == 1 && ROLE_EXPLICIT == 0 )) || [[ "$ROLE" == "$ROLE_AUTO" ]]; then
     die "In unattended mode, --role [primary|secondary] must be specified explicitly."
   fi
 
@@ -909,8 +909,27 @@ PY
     python3 -m venv "$SB_VENV_DIR"
   fi
   info "Installing xui-standby-sync into venv"
-  "${SB_VENV_DIR}/bin/pip" install --no-deps --force-reinstall "$repo_secondary/xui_standby_sync" \
-    || die "Pip install of xui-standby-sync failed"
+  local py_site
+  py_site="$("$py" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+  install -d -m 0700 "${py_site}/xui_standby_sync"
+  find "$repo_secondary/xui_standby_sync" -maxdepth 1 -type f -name '*.py' -exec \
+    install -m 0600 -o root -g root '{}' "${py_site}/xui_standby_sync/" \;
+  cat >"${SB_VENV_DIR}/bin/xui-standby" <<EOF
+#!${py}
+from xui_standby_sync.cli import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+EOF
+  cat >"${SB_VENV_DIR}/bin/xui-standby-sync" <<EOF
+#!${py}
+from xui_standby_sync.cli import legacy_main
+
+if __name__ == "__main__":
+    raise SystemExit(legacy_main())
+EOF
+  chown root:root "${SB_VENV_DIR}/bin/xui-standby" "${SB_VENV_DIR}/bin/xui-standby-sync"
+  chmod 0700 "${SB_VENV_DIR}/bin/xui-standby" "${SB_VENV_DIR}/bin/xui-standby-sync"
   ln -sf "${SB_VENV_DIR}/bin/xui-standby" "${PRIMARY_BIN_DIR}/xui-standby"
   ln -sf "${SB_VENV_DIR}/bin/xui-standby-sync" "${PRIMARY_BIN_DIR}/xui-standby-sync"
 

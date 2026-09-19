@@ -177,8 +177,9 @@ receiver() {
 
 scenario_receiver_and_security() {
   step 'receiver: verified delivery, protocol injection and immediate lock contention'
-  local payload='payload-for-receiver' name hash size output rc lock_pid
-  name='xui-backup-20260917T120000Z-99999-111111111.tar.gz.gpg'
+  local payload='payload-for-receiver' name hash size output rc lock_pid timestamp
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  name="xui-backup-${timestamp}-99999-111111111.tar.gz.gpg"
   hash="$(printf %s "$payload" | sha256sum | awk '{print $1}')"; size=${#payload}
   output="$SANDBOX_BASE/receiver.out"
   receiver "receive $name $hash $size" "$payload" "$output" || { cat "$output"; die 'receiver отверг корректный payload'; }
@@ -199,7 +200,7 @@ scenario_receiver_and_security() {
 
   flock /opt/xui-backups/.store.lock -c 'sleep 5' & lock_pid=$!
   sleep .2
-  if receiver "receive xui-backup-20260917T120001Z-99999-111111112.tar.gz.gpg $hash $size" "$payload" "$output"; then
+  if receiver "receive xui-backup-${timestamp}-99999-111111112.tar.gz.gpg $hash $size" "$payload" "$output"; then
     die 'receiver принял данные при удерживаемой .store.lock'
   else
     rc=$?
